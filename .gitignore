@@ -1,0 +1,35 @@
+/oh_modules/
+/.hvigor/
+/.idea/
+**/.cxx/
+/.appanalyzer/
+/.deps/
+/build/
+/.buildTest/
+**/.buildV1/
+entry/.preview/
+entry/oh_modules/
+entry/build/
+local.properties
+
+# Local signing material. DevEco writes certificate paths and passwords here.
+/build-profile.json5
+*.cer
+*.p7b
+*.p12
+*.jks
+*.keystore
+*.pem
+*.key
+
+# Generated packages and native binaries.
+/dist/
+*.hap
+*.app
+*.so
+*.dylib
+
+# Local diagnostics and editor residue.
+*.log
+.DS_Store
+* 2.ets

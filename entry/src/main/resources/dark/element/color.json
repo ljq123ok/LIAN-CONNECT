@@ -1,0 +1,92 @@
+{
+  "color": [
+    {
+      "name": "start_window_background",
+      "value": "#0E1419"
+    },
+    {
+      "name": "bg",
+      "value": "#0E1419"
+    },
+    {
+      "name": "app",
+      "value": "#10161B"
+    },
+    {
+      "name": "surface",
+      "value": "#1A232A"
+    },
+    {
+      "name": "surface2",
+      "value": "#202A32"
+    },
+    {
+      "name": "line",
+      "value": "#27333C"
+    },
+    {
+      "name": "line_soft",
+      "value": "#1D272E"
+    },
+    {
+      "name": "text",
+      "value": "#E8EEF2"
+    },
+    {
+      "name": "sub",
+      "value": "#A3B0BA"
+    },
+    {
+      "name": "muted",
+      "value": "#6E7C87"
+    },
+    {
+      "name": "green",
+      "value": "#36D6A4"
+    },
+    {
+      "name": "green_soft",
+      "value": "#243C34"
+    },
+    {
+      "name": "green_tint",
+      "value": "#16241F"
+    },
+    {
+      "name": "blue",
+      "value": "#4DA4FF"
+    },
+    {
+      "name": "blue_soft",
+      "value": "#20344A"
+    },
+    {
+      "name": "amber",
+      "value": "#FFBD5C"
+    },
+    {
+      "name": "amber_soft",
+      "value": "#3D3221"
+    },
+    {
+      "name": "red",
+      "value": "#FF6D70"
+    },
+    {
+      "name": "red_soft",
+      "value": "#3D2527"
+    },
+    {
+      "name": "cyan",
+      "value": "#45C9E8"
+    },
+    {
+      "name": "cyan_soft",
+      "value": "#1E3540"
+    },
+    {
+      "name": "green_btn_text",
+      "value": "#07130E"
+    }
+  ]
+}

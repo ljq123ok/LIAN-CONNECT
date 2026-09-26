@@ -1,0 +1,6 @@
+*.png binary
+*.dat binary
+*.metadb binary
+*.hap binary
+*.so binary
+*.patch -whitespace

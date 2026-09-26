@@ -1,0 +1,16 @@
+--- a/pkg/tcpip/link/fdbased/endpoint.go
++++ b/pkg/tcpip/link/fdbased/endpoint.go
+@@ -474,6 +474,13 @@
+ func IsSocketFD(fd int) (bool, error) {
+ 	var stat unix.Stat_t
+ 	if err := unix.Fstat(fd, &stat); err != nil {
++		// OpenHarmony's VPN service hands applications a valid TUN file
++		// descriptor but denies fstat(2) on it. The descriptor is not a socket,
++		// so preserve the classification while allowing the userspace stack to
++		// proceed. All other errors still fail closed.
++		if err == unix.EPERM || err == unix.EACCES {
++			return false, nil
++		}
+ 		return false, fmt.Errorf("unix.Fstat(%v,...) failed: %v", fd, err)
+ 	}
+ 	return (stat.Mode & unix.S_IFSOCK) == unix.S_IFSOCK, nil

@@ -1,0 +1,8 @@
+{
+  "modelVersion": "6.0.2",
+  "name": "lian",
+  "version": "1.0.0",
+  "description": "LIAN CONNECT native HarmonyOS VPN client",
+  "dependencies": {},
+  "devDependencies": {}
+}

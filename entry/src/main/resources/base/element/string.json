@@ -1,0 +1,32 @@
+{
+  "string": [
+    {
+      "name": "module_desc",
+      "value": "LIAN CONNECT native HarmonyOS VPN client"
+    },
+    {
+      "name": "EntryAbility_desc",
+      "value": "LIAN CONNECT main ability"
+    },
+    {
+      "name": "EntryAbility_label",
+      "value": "LIAN CONNECT"
+    },
+    {
+      "name": "perm_internet",
+      "value": "用于连接 VPN 和更新订阅"
+    },
+    {
+      "name": "perm_netinfo",
+      "value": "用于监听默认网络并在 Wi-Fi 与蜂窝之间迁移出站连接"
+    },
+    {
+      "name": "perm_background",
+      "value": "用于保持 VPN 会话在后台持续运行"
+    },
+    {
+      "name": "perm_bundle_info",
+      "value": "用于按包名查询应用名称，展示分应用代理列表"
+    }
+  ]
+}

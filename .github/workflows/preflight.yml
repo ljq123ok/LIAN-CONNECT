@@ -1,0 +1,21 @@
+name: Preflight
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  source-checks:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Check publication boundary
+        run: bash scripts/release-preflight.sh
+
+      - name: Check stability safeguards
+        run: bash scripts/stability-regression-check.sh

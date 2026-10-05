@@ -196,8 +196,18 @@ struct Index {
     if (active !== null && active !== undefined) {
       this.applyProfile(active);
     }
-    // “启动时自动连接 / 应用启动后使用上次节点”：等首帧渲染与状态基线完成后再连接
-    if (this.autoConnect) {
+    // 启动恢复连接：等首帧渲染与状态基线完成后再连接。
+    //
+    // 两个彼此独立的意图都必须恢复，缺一不可：
+    //  - autoConnect：用户设置的「打开应用就连接」；
+    //  - want_connected：用户「希望保持连接」的持久化意图，只有主动点断开才清除。
+    //
+    // 为什么必须补上 want_connected：应用进程被系统回收（冷启动重开）时
+    // autoConnect 可能仍是用户关掉的状态，于是这里不再重连，而扩展早被
+    // 低内存击杀、系统 VPN 承载也随之消失 —— 表现就是「隧道断了再也回不来」。
+    // 真机日志已证实该路径（扩展被 LowMemoryKill 击杀后再无恢复记录）。
+    const wantConnected: boolean = this.settingsStore.loadWantConnected();
+    if (this.autoConnect || wantConnected) {
       setTimeout(() => {
         this.autoConnectOnLaunch();
       }, 1500);
@@ -520,8 +530,15 @@ struct Index {
     }, 1000);
   }
 
-  private stopStatsPolling(): void {
-    // 监视器常驻，不随断开而停止；仅清空实时数值
+  /**
+   * 断开后清空实时数值。
+   *
+   * 注意它**不会**停止轮询定时器 —— 这是有意为之：断开期间仍需每秒读一次
+   * 心跳，才能发现「用户点连接后扩展起来了」或「隧道自行恢复」。
+   * 原先它的名字叫 stopStatsPolling，与行为不符（只有 onPageHide 才会真正
+   * 停表）；改名以免后续调用者误以为轮询已停而漏掉清理。
+   */
+  private clearStatsOnDisconnect(): void {
     this.clearLiveStats();
   }
 
@@ -562,11 +579,28 @@ struct Index {
     return this.screenKeep ? 20000 : 4000;
   }
 
+  /**
+   * 清空全部「实时运行数据」。
+   *
+   * 必须清干净：诊断页会无条件渲染这些字段（TUN fd、核心版本、累计流量），
+   * 若只清 4 个字段，隧道已死时页面仍会显示一个鲜活的 fd 与数 GB 流量 ——
+   * 「显示已连接但实际断开」的另一种表现形式。凡是来自核心心跳、且只对
+   * 活着的隧道有意义的字段，都在这里归零。
+   */
   private clearLiveStats(): void {
     this.coreRunning = false;
     this.downSpeed = 0;
     this.upSpeed = 0;
     this.activeConnections = 0;
+    this.proxyConnections = 0;
+    this.downTotal = 0;
+    this.upTotal = 0;
+    this.tunFd = 0;
+    this.coreVersion = '';
+    this.healthState = 'unknown';
+    this.healthDelay = 0;
+    this.coreCurrentNode = '';
+    this.coreMemory = 0;
   }
 
   /**
@@ -578,14 +612,34 @@ struct Index {
     const now: number = Date.now();
     // 心跳超过 6 秒未更新即视为核心已停止
     const staleLimit: number = 6000;
-    // 锁屏/后台回来后的容忍期内不做任何「断开」判定：
-    // 期间心跳可能仍是锁屏前那份（扩展的定时器刚被恢复、还没写第一拍），
-    // 按 6 秒阈值会误判成隧道已死，并触发一次毫无必要的重建。
+    // 锁屏/后台回到前台后的一段容忍期：见下方分支，它只放过「新鲜的正向
+    // 心跳」，其余情况交由常规判定（含系统 bearer 复核）处理。
     const inResumeGrace: boolean = this.resumeGraceUntil > 0 && now < this.resumeGraceUntil;
     if (inResumeGrace) {
-      // 只更新「核心在跑」的乐观显示，不翻转 connected、不触发恢复
-      this.coreRunning = status !== undefined && status.running;
-      return;
+      // 容忍期只保护一种情况：**新鲜的正向心跳**。
+      //
+      // 它要解决的原始问题是：扩展的 JS 定时器刚被系统恢复、还没写出第一拍，
+      // 此时按 6 秒阈值判死会打断一条完好的隧道。
+      //
+      // 但它不该无条件拖满 20 秒。真机实测：从后台回来时系统 VPN bearer 可能
+      // 已经消失（扩展被低内存击杀），而心跳文件仍是击杀前那份 running=true
+      // —— 于是界面继续显示「已连接」最长 20 秒，期间用户点按钮还会被当成
+      // 「断开」。这正是「显示已连接但实际断开」的成因。
+      //
+      // 关键在于：被杀掉的扩展留下的是**陈旧的正向**心跳，只看文件永远发现
+      // 不了。所以除「新鲜正向」之外的任何情况（陈旧正向 / running=false /
+      // 文件读不到）都直接落到下面的常规判定 —— 那条路径会用系统 bearer 做
+      // 权威复核（confirmTunnelGone），bearer 还在就保持连接、真没了就立刻
+      // 断开并恢复。用系统事实代替「盲等 20 秒」，既精确又不会误伤。
+      const heartbeatTs: number = status === undefined ? 0 : status.ts;
+      const heartbeatAge: number =
+        status === undefined ? Number.MAX_SAFE_INTEGER
+          : (heartbeatTs > 0 ? (now - heartbeatTs) : status.fileAgeMs);
+      if (status !== undefined && status.running && heartbeatAge < staleLimit) {
+        this.coreRunning = true;
+        return;
+      }
+      // 否则继续往下走，由常规逻辑（含 bearer 复核）处理
     }
     if (status === undefined) {
       // 与下面的 stale 分支保持同一套判据：用持久化意图，且不要求
@@ -615,7 +669,15 @@ struct Index {
     // toggleVpn() 刚置 false 的 connected 又翻回 true —— 表现为「点了断开
     // 但界面仍显示已连接，像没生效」。
     // 因此：只有比本次断开时刻**更新**的心跳才算数。
-    const isStaleAfterStop: boolean = this.lastStopAt > 0 && heartbeat <= this.lastStopAt;
+    //
+    // 但这条防护必须有时间上限。它原本是「只要心跳不晚于 lastStopAt 就一直
+    // 判陈旧」，而该标记只在收到更新心跳时才清零 —— 一旦设备时钟回拨、或
+    // 状态文件来自一次快速断开→连接（不早于 lastStopAt、但也没有更新到足以
+    // 越过它），就会永久落进 else 分支，因 wantConnected 已被清而**静默判为
+    // 断开且不恢复**，表现为「VPN 再也连不上」。加 6 秒窗口后，防护回归它的
+    // 本意：只挡「刚断开那几秒内的陈旧心跳」。
+    const stopGuardActive: boolean = this.lastStopAt > 0 && (now - this.lastStopAt) < staleLimit;
+    const isStaleAfterStop: boolean = stopGuardActive && heartbeat <= this.lastStopAt;
     if (status.running && fresh && !isStaleAfterStop) {
       // 收到真正的新心跳，解除断开防护
       this.lastStopAt = 0;
@@ -925,8 +987,16 @@ struct Index {
     }
     this.latencyTesting = true;
     this.statusMessage = this.selectedNode + ' 测速中...';
-    const latency = await LatencyTester.test(link);
-    this.latencyTesting = false;
+    // 用 try/finally 保证标志一定复位：LatencyTester.test 内部虽然自己吞掉了
+    // 连接错误并返回 -1，但「测速中」这个界面标志一旦因异常卡在 true，
+    // 按钮就会永久失效（同文件里 testingAll 有相同风险）。finally 让复位
+    // 与异常路径无关。
+    let latency: number = -1;
+    try {
+      latency = await LatencyTester.test(link);
+    } finally {
+      this.latencyTesting = false;
+    }
     this.lastLatency = latency;
     this.latencyAt = Date.now();
     this.updateNodeLatency(this.selectedNode, latency);
@@ -966,7 +1036,7 @@ struct Index {
       alive = await this.vpnService.isSystemVpnActive();
     } catch (err) {
       // 查询失败时保守处理：不重建，避免误伤可用隧道
-      hilog.warn(DOMAIN, TAG, 'system vpn query failed: %{public}s', `${err}`);
+      hilog.warn(DOMAIN, TAG, 'system vpn query failed');
       return;
     }
     if (alive) {
@@ -993,11 +1063,17 @@ struct Index {
     if (now - this.lastAutoRestartAt < 60000) {
       return;
     }
-    this.lastAutoRestartAt = now;
     const active = this.subService?.getActive();
     if (active === null || active === undefined) {
       return;
     }
+    // 节流时刻只在「确实要发起一次尝试」时才消费。
+    //
+    // 原来它在上面两处守卫之前就写入了：没有订阅时直接 return、或 connecting
+    // 抢先，都会白烧掉这 60 秒配额，于是出现「提示正在恢复，却整整一分钟不
+    // 重连」的观感。移到守卫之后、toggleVpn() 之前，保证每一次被消耗的配额
+    // 都对应一次真实的重连发起。
+    this.lastAutoRestartAt = now;
     // 这条 hilog 是刻意保留的：它与 autoConnectOnLaunch() 的启动自动连接
     // 走的是同一个 toggleVpn()，仅靠结果无法区分是谁触发的恢复。
     // 排查「隧道断了但没恢复」时，需要靠它判断意图持久化那条路径是否生效。
@@ -1006,7 +1082,27 @@ struct Index {
     await this.toggleVpn();
   }
 
+  /**
+   * 连接 / 断开的总入口。
+   *
+   * 这里只做一件事：保证 `connecting` 一定被复位。
+   *
+   * 为什么需要：真正的流程在 toggleVpnInternal 里，它有 5 处 return 分别
+   * 手工复位 connecting。目前每条分支都记得复位，但只要将来有人在中间插入
+   * 一个可能抛异常的调用（例如 getAbilityContext()），connecting 就会永久停在
+   * true —— 而 toggleVpn / autoConnectOnLaunch / confirmTunnelGone /
+   * autoRestartTunnel 全都以它为前置守卫，界面会彻底失去响应，只能重启应用。
+   * 用 try/finally 把这个约束变成结构性保证，而不是靠每处记得写。
+   */
   private async toggleVpn(): Promise<void> {
+    try {
+      await this.toggleVpnInternal();
+    } finally {
+      this.connecting = false;
+    }
+  }
+
+  private async toggleVpnInternal(): Promise<void> {
     if (this.connecting) {
       return;
     }
@@ -1023,7 +1119,7 @@ struct Index {
         this.connected = false;
         // 用户主动断开：清除意图，避免之后被自动重连回来
         this.settingsStore?.saveWantConnected(false);
-        this.stopStatsPolling();
+        this.clearStatsOnDisconnect();
         this.sessionStart = 0;
         this.statusMessage = 'VPN 已断开';
         this.pushEvent('VPN 已断开', '隧道已关闭，网络恢复直连', 'info');
@@ -1066,6 +1162,16 @@ struct Index {
     this.connecting = false;
     if (result.success) {
       this.connected = true;
+      // 新会话开始，必须清掉上一次的断开时刻。
+      //
+      // 为什么：lastStopAt 是用来挡住「断开前那份陈旧心跳」的。它只在
+      // 收到比它更新的心跳时才清零（见 refreshCoreStatus 的正向分支）。
+      // 如果这里不清，新一轮启动后的第一拍心跳会因 ts <= lastStopAt 被判成
+      // 陈旧 → 落 else 分支 → 而 wantConnected 刚被写成 true → 触发
+      // confirmTunnelGone()；若此刻系统 bearer 查询瞬时返回 false，就会把
+      // connected 翻回 false 并重复发起一次启动。表现为「重连成功后界面
+      // 闪回未连接」。
+      this.lastStopAt = 0;
       // 记录用户意图：进程被杀后重开时，靠它判断「应该自动恢复连接」，
       // 而不是依赖 connected（新进程里它必然是 false）。
       this.settingsStore?.saveWantConnected(true);
@@ -1296,9 +1402,24 @@ struct Index {
     for (let t = 0; t < 5 && t < all.length; t++) {
       threads.push(worker());
     }
-    await Promise.all(threads);
-    this.testingAll = false;
-    this.statusMessage = '全部节点测速完成';
+    // try/finally 保证 testingAll 一定复位；否则一次异常就会让「全部测速」
+    // 按钮永久失效（节点页以 !testingAll 作为可用条件），只能重启应用。
+    try {
+      await Promise.all(threads);
+      // 等最后一批结果落盘再宣告完成。
+      //
+      // flush 是 300ms 防抖的：Promise.all 返回时，最后几条结果可能还留在
+      // pending 里、或正躺在 setTimeout 中。原先直接置 testingAll=false 并
+      // 覆盖状态文案，会让「全部节点测速完成」先于最后几个节点的延迟出现，
+      // 状态与实际不一致。这里轮询等到 pending 清空且没有在途 flush。
+      while (pending.size > 0 || flushing) {
+        flush();
+        await new Promise<void>((resolve) => setTimeout(resolve, 120));
+      }
+      this.statusMessage = '全部节点测速完成';
+    } finally {
+      this.testingAll = false;
+    }
   }
 
   private saveSettings(settings: AppSettings): void {

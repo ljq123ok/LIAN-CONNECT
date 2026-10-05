@@ -375,7 +375,7 @@ func LianCoreSelectNode(groupNameC, nameC *C.char) *C.char {
 		target = largestRoutingGroup()
 	}
 	if target == nil {
-		log.Warnln("select node %q: group %q not found", name, groupName)
+		log.Warnln("select node: group not found")
 		payload, _ := json.Marshal(bridgeStatus())
 		return cstr(string(payload))
 	}
@@ -387,13 +387,13 @@ func LianCoreSelectNode(groupNameC, nameC *C.char) *C.char {
 	// （hub/route/proxies.go:85 `proxy.Adapter().(outboundgroup.SelectAble)`）。
 	sel, ok := target.Adapter().(outboundgroup.SelectAble)
 	if !ok {
-		log.Warnln("select node %q: group %q is not selectable", name, groupName)
+		log.Warnln("select node: group is not selectable")
 		payload, _ := json.Marshal(bridgeStatus())
 		return cstr(string(payload))
 	}
 	if err := sel.Set(name); err != nil {
 		// 节点名不存在（例如订阅更新后改名）时不改变现状，仅记录。
-		log.Warnln("select node %q in group %q failed: %v", name, groupName, err)
+		log.Warnln("select node failed")
 	}
 	payload, _ := json.Marshal(bridgeStatus())
 	return cstr(string(payload))
@@ -805,6 +805,15 @@ func LianCoreStart(configPathC, homeDirC *C.char, fd C.int) *C.char {
 func LianCoreStop() {
 	state.mu.Lock()
 	defer state.mu.Unlock()
+	// 健康状态必须在任何提前返回之前重置。
+	//
+	// resetCoreHealth 除了清探测结果，还负责 generation++ 与 checking=false。
+	// 原来它排在 `if !state.running { return }` 之后：当核心已经不在运行
+	// （重复 stop、或启动失败后清理）时直接返回，checking 就可能永久停在
+	// true —— 此后 triggerHealthCheck 每次都提前返回，健康探测再也不会执行，
+	// 界面上的链路延迟/健康状态就此冻结。
+	// 重置是幂等的，先做无副作用。
+	resetCoreHealth()
 	if !state.running {
 		return
 	}
@@ -815,7 +824,6 @@ func LianCoreStop() {
 	state.running = false
 	state.fd = 0
 	state.configPath = ""
-	resetCoreHealth()
 }
 
 // resetCoreHealth 清空健康探测结果与连续失败计数。

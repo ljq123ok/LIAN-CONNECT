@@ -1,6 +1,7 @@
 import { connection, vpnExtension } from '@kit.NetworkKit';
 import { BusinessError } from '@kit.BasicServicesKit';
 import Want from '@ohos.app.ability.Want';
+import fileIo from '@ohos.file.fs';
 import { VpnState } from '../models/ArkModels';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 
@@ -8,6 +9,18 @@ const VPN_BUNDLE = 'com.lianconnect.app';
 const VPN_ABILITY = 'LianVpnAbility';
 const DOMAIN = 0x2020;
 const TAG = 'LianVpnSvc';
+/** 等待核心真正挂上 TUN 的上限（毫秒） */
+const CORE_READY_TIMEOUT_MS = 6000;
+/** 轮询核心状态文件的间隔（毫秒） */
+const CORE_READY_POLL_MS = 150;
+/** 心跳超过该毫秒数即视为陈旧 */
+const CORE_HEARTBEAT_FRESH_MS = 6000;
+
+/** 核心状态文件里判定「已就绪」所需的最小子集 */
+interface CoreProbe {
+  running?: boolean;
+  ts?: number;
+}
 
 export interface VpnStartResult {
   success: boolean;
@@ -53,9 +66,46 @@ export class VpnService {
       this.state = await this.isSystemVpnActive() ? 'connected' : 'idle';
       hilog.info(DOMAIN, TAG, 'system vpn state refreshed: %{public}s', this.state);
     } catch (err) {
-      hilog.warn(DOMAIN, TAG, 'system vpn state refresh failed: %{public}s', `${err}`);
+      hilog.warn(DOMAIN, TAG, 'system vpn state refresh failed');
     }
     return this.state;
+  }
+
+  /**
+   * 等待核心真正挂上 TUN（心跳变成 running=true 且新鲜）。
+   *
+   * 为什么要等：系统 VPN 承载由扩展的 VpnConnection.create() 建立，它会
+   * 比 mihomo 真正接管 TUN 早约 1 秒出现。真机日志里因此出现过
+   * 「data plane active」与「LianVpnAbility onDestroy」落在同一毫秒的错乱 ——
+   * 用户在那一秒内再点一次，就会对还在启动中的核心下发停止。
+   * 只看 bearer 还会把「扩展起来了但核心启动失败」当成连接成功。
+   *
+   * @returns 核心是否在超时前真正进入运行状态
+   */
+  private async waitForCoreReady(homeDir: string): Promise<boolean> {
+    if (homeDir.length === 0) {
+      return false;
+    }
+    const statusPath: string = homeDir + '/core-status.json';
+    const deadline: number = Date.now() + CORE_READY_TIMEOUT_MS;
+    while (Date.now() < deadline) {
+      try {
+        const raw: string = fileIo.readTextSync(statusPath);
+        if (raw.length > 0) {
+          const parsed = JSON.parse(raw) as CoreProbe;
+          const running: boolean = parsed.running === true;
+          const ts: number = parsed.ts !== undefined && parsed.ts !== null ? parsed.ts : 0;
+          const fresh: boolean = ts > 0 && (Date.now() - ts) < CORE_HEARTBEAT_FRESH_MS;
+          if (running && fresh) {
+            return true;
+          }
+        }
+      } catch (_err) {
+        // 状态文件尚未写出属正常情况，继续等待
+      }
+      await new Promise<void>((resolve) => setTimeout(resolve, CORE_READY_POLL_MS));
+    }
+    return false;
   }
 
   private buildWant(): Want {
@@ -96,12 +146,20 @@ export class VpnService {
       await vpnExtension.startVpnExtensionAbility(this.buildWant());
       hilog.info(DOMAIN, TAG, 'vpn extension start resolved');
 
-      // startVpnExtensionAbility resolves when the extension is launched, not
-      // when mihomo has successfully attached the TUN fd. Give the extension
-      // a short settling window, then require a real system VPN bearer. This
-      // prevents a failed core from being shown as a false connected state.
-      await new Promise<void>((resolve) => setTimeout(resolve, 700));
+      // startVpnExtensionAbility 只保证扩展被拉起，不保证 mihomo 已接管 TUN。
+      // 因此先确认系统 bearer 已建立（挡住扩展根本没起来的情况），
+      // 再等核心真正进入运行状态（挡住「扩展起来了但核心启动失败」，
+      // 以及 bearer 早于数据面出现导致的秒级竞态）。
       if (!await this.isSystemVpnActive()) {
+        await new Promise<void>((resolve) => setTimeout(resolve, 700));
+      }
+      if (!await this.isSystemVpnActive()) {
+        this.lastError = 'VPN 扩展启动失败，请检查系统日志';
+        this.state = 'error';
+        return { success: false, error: this.lastError };
+      }
+      const coreReady: boolean = await this.waitForCoreReady(homeDir);
+      if (!coreReady) {
         this.lastError = 'VPN 核心启动失败，请检查节点或系统日志';
         this.state = 'error';
         return { success: false, error: this.lastError };

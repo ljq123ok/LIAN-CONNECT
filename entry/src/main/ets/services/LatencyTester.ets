@@ -151,7 +151,7 @@ export class LatencyTester {
       return cost;
     } catch (err) {
       const e = err as BusinessError;
-      hilog.info(DOMAIN, TAG, 'connect fail host=%{public}s err=%{public}s', host, e.message ?? '');
+      hilog.info(DOMAIN, TAG, 'connect probe failed code=%{public}d', e.code);
       try {
         await tcp.close();
       } catch (_err) {

@@ -141,7 +141,7 @@ export default class LianVpnAbility extends VpnExtensionAbility {
       const version: string = lianbridge.version();
       hilog.info(DOMAIN, TAG, 'mihomo core loaded, version=%{public}s', version);
     } catch (err) {
-      hilog.error(DOMAIN, TAG, 'mihomo core load failed: %{public}s', `${err}`);
+      hilog.error(DOMAIN, TAG, 'mihomo core load failed');
       return;
     }
 
@@ -159,18 +159,18 @@ export default class LianVpnAbility extends VpnExtensionAbility {
       await this.protectNet();
       hilog.info(DOMAIN, TAG, 'protectProcessNet done');
       const result: string = lianbridge.start(fd, active.path, active.homeDir);
-      hilog.info(DOMAIN, TAG, 'core start result=%{public}s', result);
+      hilog.info(DOMAIN, TAG, 'core start response received');
       const status: BridgeStatus = JSON.parse(result) as BridgeStatus;
       const startError: string = status.error ?? '';
       if (startError.length > 0 || !status.running) {
-        hilog.error(DOMAIN, TAG, 'core start failed: %{public}s', startError);
+        hilog.error(DOMAIN, TAG, 'core start failed');
         await this.destroyTun();
         return;
       }
       hilog.info(DOMAIN, TAG, 'vpn data plane active fd=%{public}d', fd);
       this.startPolling(active.homeDir);
     } catch (err) {
-      hilog.error(DOMAIN, TAG, 'vpn start error: %{public}s', JSON.stringify(err));
+      hilog.error(DOMAIN, TAG, 'vpn start error');
       await this.destroyTun();
     }
   }
@@ -383,7 +383,7 @@ export default class LianVpnAbility extends VpnExtensionAbility {
       const raw: string = lianbridge.health();
       payload = JSON.parse(raw) as HealthPayload;
     } catch (err) {
-      hilog.warn(DOMAIN, TAG, 'health probe failed: %{public}s', `${err}`);
+      hilog.warn(DOMAIN, TAG, 'health probe failed');
       return;
     }
     if (payload === undefined) {
@@ -392,8 +392,7 @@ export default class LianVpnAbility extends VpnExtensionAbility {
     if (payload.state === 'ok') {
       this.tunRecoverAttempts = 0;
       this.nextTunRecoverAt = 0;
-      hilog.info(DOMAIN, TAG, 'tunnel healthy delay=%{public}dms node=%{public}s',
-        payload.delay, payload.currentNode);
+      hilog.info(DOMAIN, TAG, 'tunnel healthy delay=%{public}dms', payload.delay);
       return;
     }
     // 只有明确判定为 fail 才自愈。
@@ -412,13 +411,12 @@ export default class LianVpnAbility extends VpnExtensionAbility {
     // 只有 Go 核心明确报告 TUN listener 已停止时才重建平台 TUN。
     if (detail !== 'tun listener disabled') {
       hilog.warn(DOMAIN, TAG,
-        'tunnel unhealthy (confirmed) detail=%{public}s; keep tun and wait for network recovery',
-        detail);
+        'tunnel unhealthy (confirmed); keep tun and wait for network recovery');
       return;
     }
     if (now < this.nextTunRecoverAt) {
-      hilog.warn(DOMAIN, TAG, 'tun recovery deferred until=%{public}d detail=%{public}s',
-        this.nextTunRecoverAt, detail);
+      hilog.warn(DOMAIN, TAG, 'tun recovery deferred until=%{public}d',
+        this.nextTunRecoverAt);
       return;
     }
     if (this.tunRecoverAttempts >= TUN_RECOVER_MAX_ATTEMPTS) {
@@ -433,7 +431,7 @@ export default class LianVpnAbility extends VpnExtensionAbility {
     hilog.warn(DOMAIN, TAG, 'tun listener disabled; recovering attempt=%{public}d',
       this.tunRecoverAttempts);
     this.recoverCore().catch((err: Error) => {
-      hilog.error(DOMAIN, TAG, 'core recover promise failed: %{public}s', `${err}`);
+      hilog.error(DOMAIN, TAG, 'core recover promise failed');
     });
   }
 
@@ -475,10 +473,10 @@ export default class LianVpnAbility extends VpnExtensionAbility {
         hilog.info(DOMAIN, TAG, 'core recovered with fresh tun fd=%{public}d count=%{public}d',
           fd, this.recoverCount);
       } else {
-        hilog.error(DOMAIN, TAG, 'core recover failed: %{public}s', status.error);
+      hilog.error(DOMAIN, TAG, 'core recover failed');
       }
     } catch (err) {
-      hilog.error(DOMAIN, TAG, 'core recover error: %{public}s', `${err}`);
+      hilog.error(DOMAIN, TAG, 'core recover error');
     } finally {
       this.recovering = false;
     }
@@ -498,7 +496,7 @@ export default class LianVpnAbility extends VpnExtensionAbility {
       this.lastCommandSeq = cmd.seq;
       if (cmd.mode !== undefined && cmd.mode !== null && cmd.mode.length > 0) {
         const result: string = lianbridge.setMode(cmd.mode);
-        hilog.info(DOMAIN, TAG, 'outbound mode applied: %{public}s', cmd.mode);
+        hilog.info(DOMAIN, TAG, 'outbound mode applied');
         if (result.length > 0) {
           this.writeTextFileSync(homeDir + '/core-status.json', result);
         }
@@ -509,8 +507,7 @@ export default class LianVpnAbility extends VpnExtensionAbility {
         const group: string = cmd.selectGroup !== undefined && cmd.selectGroup !== null
           ? cmd.selectGroup : '';
         const result: string = lianbridge.selectNode(group, cmd.selectNode);
-        hilog.info(DOMAIN, TAG, 'node selection applied: group=%{public}s name=%{public}s',
-          group.length > 0 ? group : '(main)', cmd.selectNode);
+        hilog.info(DOMAIN, TAG, 'node selection applied');
         if (result.length > 0) {
           this.writeTextFileSync(homeDir + '/core-status.json', result);
         }
@@ -580,17 +577,71 @@ export default class LianVpnAbility extends VpnExtensionAbility {
       lianbridge.stop();
       hilog.info(DOMAIN, TAG, 'mihomo core stop completed');
     } catch (err) {
-      hilog.error(DOMAIN, TAG, 'mihomo core stop failed: %{public}s', `${err}`);
+      hilog.error(DOMAIN, TAG, 'mihomo core stop failed');
     }
+    // 终态快照必须在下一次 await 之前落盘。
+    //
+    // 为什么不能放在函数末尾：系统在 onDestroy 返回后很快就会终止扩展进程。
+    // 真机日志实测，从 `mihomo core stop completed` 到进程被回收只有约 3ms；
+    // 而 `conn.destroy()` 是异步的，一旦先 await 它，后面的写入就再也没机会
+    // 执行，文件会永久留着最后一次 running=true 的心跳 —— 主进程读到它就像
+    // 「隧道还在」，长跑中因此出现过状态文件冻结数小时仍自称健康的假象。
+    // 这里趁核心已停、状态已知，先同步写完终态，再去做异步清理。
+    this.writeTerminalStatus();
     if (this.conn !== undefined) {
       const conn = this.conn as vpnExtension.VpnConnection;
       try {
         await conn.destroy();
         hilog.info(DOMAIN, TAG, 'vpn connection destroy completed');
       } catch (err) {
-        hilog.error(DOMAIN, TAG, 'vpn connection destroy failed: %{public}s', `${err}`);
+        hilog.error(DOMAIN, TAG, 'vpn connection destroy failed');
       }
       this.conn = undefined;
+    }
+  }
+
+  /**
+   * 写入「核心未运行」的终态快照。
+   *
+   * ts 用当前时间，这样主进程的陈旧心跳判断会把它视为**新鲜**的
+   * running=false —— 既不会误判成「隧道还活着」，也不会被 lastStopAt
+   * 的断开防护挡掉而回退到那份旧的 running=true。
+   */
+  private writeTerminalStatus(): void {
+    const active = this.activeConfig;
+    if (active === undefined || active.homeDir.length === 0) {
+      return;
+    }
+    try {
+      const snapshot: EnrichedStatus = {
+        running: false,
+        version: '',
+        error: '',
+        fd: -1,
+        configPath: active.path,
+        up: 0,
+        down: 0,
+        upTotal: 0,
+        downTotal: 0,
+        connections: 0,
+        proxyConnections: 0,
+        memory: 0,
+        mode: 'rule',
+        healthState: 'unknown',
+        healthDelay: 0,
+        healthCheckedAt: 0,
+        healthyNodes: 0,
+        totalNodes: 0,
+        currentNode: '',
+        recoverCount: this.recoverCount,
+        startedAt: 0,
+        ts: Date.now()
+      };
+      this.writeTextFileSync(active.homeDir + '/core-status.json', JSON.stringify(snapshot));
+      // 连接明细同样清空，避免界面继续列出早已不存在的会话。
+      this.writeTextFileSync(active.homeDir + '/core-connections.json', '[]');
+    } catch (_err) {
+      // 终态快照是尽力而为：写不进去也不能阻断停止流程
     }
   }
 
@@ -599,7 +650,7 @@ export default class LianVpnAbility extends VpnExtensionAbility {
     this.destroyTun().then(() => {
       hilog.info(DOMAIN, TAG, 'vpn tunnel cleanup completed');
     }).catch((err: Error) => {
-      hilog.error(DOMAIN, TAG, 'vpn tunnel cleanup failed: %{public}s', `${err}`);
+      hilog.error(DOMAIN, TAG, 'vpn tunnel cleanup failed');
     });
   }
 }

@@ -137,7 +137,7 @@ export class AppCatalog {
         return app.label;
       }
     } catch (err) {
-      hilog.debug(DOMAIN, TAG, 'resolveLabel unavailable: %{public}s', `${err}`);
+      hilog.debug(DOMAIN, TAG, 'resolveLabel unavailable');
     }
     return '';
   }

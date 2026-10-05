@@ -1,6 +1,6 @@
 # 未签名 HAP 的自签与安装
 
-GitHub Release 中的 `LIAN-CONNECT-v0.01-unsigned.hap` 是 arm64 未签名包，不能直接
+GitHub Release 中的 `LIAN-CONNECT-v0.02-unsigned.hap` 是 arm64 未签名包，不能直接
 安装。你需要使用自己的 HarmonyOS 应用证书和 Profile 完成签名；Profile 必须匹配
 包名 `com.lianconnect.app`，并包含目标调试设备，或具备相应的发布安装资格。
 
@@ -27,10 +27,10 @@ java -jar "$HAP_SIGN_TOOL" sign-app \
   -keyAlias YOUR_KEY_ALIAS \
   -appCertFile /path/to/your-app-cert.cer \
   -profileFile /path/to/your-profile.p7b \
-  -inFile LIAN-CONNECT-v0.01-unsigned.hap \
+  -inFile LIAN-CONNECT-v0.02-unsigned.hap \
   -signAlg SHA256withECDSA \
   -keystoreFile /path/to/your-keystore.p12 \
-  -outFile LIAN-CONNECT-v0.01-signed.hap \
+  -outFile LIAN-CONNECT-v0.02-signed.hap \
   -compatibleVersion 22 \
   -signCode 1 \
   -pwdInputMode 1
@@ -53,7 +53,7 @@ shasum -a 256 -c SHA256SUMS.txt
 然后通过 DevEco Studio 安装签名后的 HAP，或使用与本机 SDK 配套的 `hdc`：
 
 ```bash
-hdc install LIAN-CONNECT-v0.01-signed.hap
+hdc install LIAN-CONNECT-v0.02-signed.hap
 ```
 
 若出现签名、Profile 或设备不匹配错误，请检查包名、证书链、Profile 有效期和目标

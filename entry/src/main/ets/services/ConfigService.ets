@@ -133,8 +133,8 @@ export class ConfigService {
     }
     const path = this.writeConfig(output);
     hilog.info(CFG_DOMAIN, CFG_TAG,
-      'generated config path=%{public}s format=%{public}s nodes=%{public}d mode=%{public}s geo=%{public}s dns=%{public}s',
-      path, profile.detectedFormat, result.nodes.length, mode,
+      'generated config format=%{public}s nodes=%{public}d mode=%{public}s geo=%{public}s dns=%{public}s',
+      profile.detectedFormat, result.nodes.length, mode,
       geoReady ? 'geosite+geoip' : 'builtin-domain-list',
       output.indexOf('\ndns:\n') >= 0 ? 'enabled' : 'missing');
     try {

@@ -354,7 +354,7 @@ export class SubscriptionService {
       const protocol = this.shareProtocol(line);
       const name = this.shareName(line, protocol, index);
       if (index === 0) {
-        hilog.info(DOMAIN, TAG, 'sample link[0] protocol=%{public}s name=%{public}s', protocol, name);
+        hilog.info(DOMAIN, TAG, 'sample link[0] protocol=%{public}s', protocol);
       }
       nodes.push({
         name: name,

@@ -72,7 +72,7 @@ export class GeoAssets {
       hilog.info(DOMAIN, TAG, 'geo asset staged: %{public}s', name);
     } catch (err) {
       // 缺少内置资源时静默回退到内置域名规则
-      hilog.warn(DOMAIN, TAG, 'geo asset staging failed: %{public}s %{public}s', name, `${err}`);
+      hilog.warn(DOMAIN, TAG, 'geo asset staging failed: %{public}s', name);
     }
   }
 }

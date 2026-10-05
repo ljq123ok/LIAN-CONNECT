@@ -524,7 +524,7 @@ export struct SettingsPage {
         .width('100%')
         .margin({ bottom: 8 })
       Column({ space: 0 }) {
-        this.infoRow('版本', 'LIAN CONNECT v0.01 测试版')
+        this.infoRow('版本', 'LIAN CONNECT v0.02 测试版')
         this.infoRow('目标系统', 'HarmonyOS API 22+')
       }
       .width('100%')

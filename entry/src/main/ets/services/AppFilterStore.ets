@@ -54,7 +54,7 @@ export class AppFilterStore {
     try {
       fileIo.renameSync(tmp, path);
     } catch (err) {
-      hilog.error(DOMAIN, TAG, 'save rename failed: %{public}s', `${err}`);
+      hilog.error(DOMAIN, TAG, 'save rename failed');
       throw new Error('分应用配置写入失败');
     }
   }

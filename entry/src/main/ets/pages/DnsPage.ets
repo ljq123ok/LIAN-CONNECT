@@ -7,12 +7,13 @@ export struct DnsPage {
   /** 核心实际生效的 DNS 增强模式（如 redir-host） */
   @Prop coreDnsMode: string = '';
   @Prop servers: DnsServer[] = [];
-  onModeChange: (mode: string) => void = () => {
+  @Prop dnsCache: boolean = true;
+  @Prop fakeIp: boolean = false;
+  @Prop sniff: boolean = true;
+  @Prop failClosed: boolean = false;
+  onSettingsChange: (mode: string, dnsCache: boolean, fakeIp: boolean,
+    sniff: boolean, failClosed: boolean) => void = () => {
   };
-  @State private dnsCache: boolean = true;
-  @State private fakeIp: boolean = true;
-  @State private sniff: boolean = true;
-  @State private failClosed: boolean = false;
 
   build() {
     Scroll() {
@@ -82,7 +83,7 @@ export struct DnsPage {
       .height(34)
       .layoutWeight(1)
       .onClick(() => {
-        this.onModeChange(mode);
+        this.onSettingsChange(mode, this.dnsCache, mode === 'Fake-IP', this.sniff, this.failClosed);
       })
   }
 
@@ -144,18 +145,19 @@ export struct DnsPage {
         .margin({ bottom: 8 })
       Column({ space: 0 }) {
         this.switchRow('DNS 缓存', '已解析域名缓存 300 秒', this.dnsCache, (value: boolean) => {
-          this.dnsCache = value;
+          this.onSettingsChange(this.dnsMode, value, this.fakeIp, this.sniff, this.failClosed);
         })
         if (title === '解析策略') {
           this.switchRow('Fake-IP', '返回 198.18.0.0/16 虚拟地址', this.fakeIp, (value: boolean) => {
-            this.fakeIp = value;
+            this.onSettingsChange(value ? 'Fake-IP' : '智能', this.dnsCache, value,
+              this.sniff, this.failClosed);
           })
           this.switchRow('流量嗅探', '识别未加密流量的目标域名', this.sniff, (value: boolean) => {
-            this.sniff = value;
+            this.onSettingsChange(this.dnsMode, this.dnsCache, this.fakeIp, value, this.failClosed);
           })
         } else {
           this.switchRow('DNS 防泄漏', '核心或 DNS 异常时阻止直连', this.failClosed, (value: boolean) => {
-            this.failClosed = value;
+            this.onSettingsChange(this.dnsMode, this.dnsCache, this.fakeIp, this.sniff, value);
           })
         }
       }

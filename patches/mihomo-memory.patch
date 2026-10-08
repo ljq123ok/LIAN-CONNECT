@@ -1,0 +1,17 @@
+diff --git a/component/geodata/utils.go b/component/geodata/utils.go
+--- a/component/geodata/utils.go
++++ b/component/geodata/utils.go
+@@ -192,6 +192,13 @@ func LoadGeoIPMatcher(country string) (matcher *router.IpMatcher, err error) {
+ 	return matcher, nil
+ }
+ 
++// ClearGeoSiteSourceCache releases the raw domain records loaded while building
++// GeoSite matchers. Compiled matchers stay cached because active GEOSITE rules
++// resolve them through LoadGeoSiteMatcher while matching requests.
++func ClearGeoSiteSourceCache() {
++	loadGeoSiteMatcherListSF.Reset()
++}
++
+ func ClearGeoSiteCache() {
+ 	loadGeoSiteMatcherListSF.Reset()
+ 	loadGeoSiteMatcherSF.Reset()

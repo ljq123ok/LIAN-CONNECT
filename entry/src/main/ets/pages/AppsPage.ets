@@ -81,7 +81,15 @@ export struct AppsPage {
   @State private keyword: string = '';
   @State private addInput: string = '';
   @State private addError: string = '';
-  @State private showAdd: boolean = false;
+  @State private addMessage: string = '';
+  /**
+   * 添加区默认展开。
+   *
+   * 本工程无法枚举已安装应用（见 AppCatalog 类注释），手动录入是唯一的
+   * 补充途径，因此不能再把它折叠起来藏在列表底部——那会让用户以为
+   * 「列表里没有就是加不了」。默认展开 + 置于列表上方，让入口一眼可见。
+   */
+  @State private showAdd: boolean = true;
 
   /** 内置目录 + 自定义条目，合并成一个列表 */
   private allApps(): AppProxyRule[] {
@@ -95,13 +103,31 @@ export struct AppsPage {
       });
     }
     for (let i = 0; i < this.customApps.length; i++) {
+      const pkg = this.customApps[i].bundleName;
+      // 跳过已在内置目录里的条目：用户可能在某个包进入内置目录之前就手动
+      // 添加过它（例如「出境易」）。此时若照搬会产生两条相同 bundleName 的行，
+      // 而下面 ForEach 正是以 bundleName 作 key —— 重复 key 会让 ArkUI 行为
+      // 未定义（重复渲染 / 复用错行）。内置条目优先，自定义条目只在目录之外
+      // 才补进来。
+      if (this.isBuiltIn(pkg, builtIn)) {
+        continue;
+      }
       out.push({
-        bundleName: this.customApps[i].bundleName,
+        bundleName: pkg,
         appName: this.customApps[i].appName,
-        proxied: this.excludedBundles.indexOf(this.customApps[i].bundleName) < 0
+        proxied: this.excludedBundles.indexOf(pkg) < 0
       });
     }
     return out;
+  }
+
+  private isBuiltIn(bundleName: string, builtIn: AppProxyRule[]): boolean {
+    for (let i = 0; i < builtIn.length; i++) {
+      if (builtIn[i].bundleName === bundleName) {
+        return true;
+      }
+    }
+    return false;
   }
 
   private filtered(): AppProxyRule[] {
@@ -131,9 +157,9 @@ export struct AppsPage {
         Column({ space: 12 }) {
           this.header()
           if (this.filterEnabled) {
+            this.addSection()
             this.filterToolbar()
             this.list()
-            this.addSection()
             this.footnote()
           }
         }
@@ -216,12 +242,19 @@ export struct AppsPage {
   private list() {
     Column({ space: 0 }) {
       if (this.filtered().length === 0) {
-        Text('没有匹配的应用')
-          .fontSize(11)
-          .fontColor($r('app.color.muted'))
-          .width('100%')
-          .padding({ top: 18, bottom: 18 })
-          .textAlign(TextAlign.Center)
+        // 搜索无结果时引导到手动录入：本工程无法枚举已安装应用，
+        // 找不到不代表不能加。只写「没有匹配的应用」会让用户以为到头了。
+        Column({ space: 6 }) {
+          Text('没有匹配的应用')
+            .fontSize(11)
+            .fontColor($r('app.color.muted'))
+          Text('本机装的应用不在目录里？在上方「添加应用」输入包名即可加入。')
+            .fontSize(10)
+            .fontColor($r('app.color.blue'))
+            .textAlign(TextAlign.Center)
+        }
+        .width('100%')
+        .padding({ left: 16, right: 16, top: 18, bottom: 18 })
       } else {
         ForEach(this.filtered(), (item: AppProxyRule) => {
           AppRow({
@@ -244,9 +277,10 @@ export struct AppsPage {
   private addSection() {
     Column({ space: 8 }) {
       Row() {
-        Text('添加其它应用')
-          .fontSize(11)
-          .fontColor($r('app.color.sub'))
+        Text('添加应用')
+          .fontSize(12)
+          .fontWeight(FontWeight.Bold)
+          .fontColor($r('app.color.text'))
         Blank()
         Text(this.showAdd ? '收起' : '展开')
           .fontSize(11)
@@ -254,13 +288,22 @@ export struct AppsPage {
           .onClick(() => {
             this.showAdd = !this.showAdd;
             this.addError = '';
+            this.addMessage = '';
           })
       }
       .width('100%')
 
       if (this.showAdd) {
+        Text('输入包名后添加；支持一次粘贴多个（换行或逗号分隔）。')
+          .fontSize(10)
+          .fontColor($r('app.color.muted'))
+          .width('100%')
+
         Row({ space: 8 }) {
-          TextInput({ text: this.addInput, placeholder: '输入包名，如 com.example.app' })
+          TextInput({
+            text: this.addInput,
+            placeholder: '如 com.example.app，多个用逗号分隔'
+          })
             .fontSize(12)
             .height(34)
             .layoutWeight(1)
@@ -268,24 +311,14 @@ export struct AppsPage {
             .onChange((value: string) => {
               this.addInput = value;
               this.addError = '';
+              this.addMessage = '';
             })
           Button('添加')
             .type(ButtonType.Normal)
             .fontSize(12)
             .fontColor($r('app.color.blue'))
             .onClick(() => {
-              const name = this.addInput.trim();
-              if (!AppCatalog.isValidBundleName(name)) {
-                this.addError = '包名格式不正确（需形如 com.example.app）';
-                return;
-              }
-              const ok = this.onAddCustom(name);
-              if (ok) {
-                this.addInput = '';
-                this.addError = '';
-              } else {
-                this.addError = '该包名已在列表中';
-              }
+              this.submitAdd();
             })
         }
         .width('100%')
@@ -296,15 +329,72 @@ export struct AppsPage {
             .fontColor($r('app.color.red'))
             .width('100%')
         }
+        if (this.addMessage.length > 0) {
+          Text(this.addMessage)
+            .fontSize(10)
+            .fontColor($r('app.color.green'))
+            .width('100%')
+        }
       }
     }
     .width('100%')
+    .padding(12)
+    .borderRadius(8)
+    .backgroundColor($r('app.color.surface'))
+    .border({ width: 1, color: $r('app.color.line_soft') })
+  }
+
+  /**
+   * 提交「添加应用」。
+   *
+   * 支持一次录入多个包名：逐个校验格式、逐个尝试添加，最后汇总结果。
+   * 之所以不做「有一个非法就整体拒绝」：批量粘贴时打错一个字符很常见，
+   * 整体回滚会逼用户反复重来；逐条处理并明确报告成功/失败更有用。
+   */
+  private submitAdd(): void {
+    const names: string[] = AppCatalog.parseBundleNames(this.addInput);
+    if (names.length === 0) {
+      this.addError = '请输入包名（形如 com.example.app）';
+      this.addMessage = '';
+      return;
+    }
+    const invalid: string[] = [];
+    const existed: string[] = [];
+    let added = 0;
+    for (let i = 0; i < names.length; i++) {
+      const name = names[i];
+      if (!AppCatalog.isValidBundleName(name)) {
+        invalid.push(name);
+        continue;
+      }
+      if (this.onAddCustom(name)) {
+        added++;
+      } else {
+        existed.push(name);
+      }
+    }
+    this.addInput = '';
+    const parts: string[] = [];
+    if (added > 0) {
+      parts.push('已添加 ' + added + ' 个');
+    }
+    if (existed.length > 0) {
+      parts.push(existed.length + ' 个已在列表中');
+    }
+    if (invalid.length > 0) {
+      parts.push(invalid.length + ' 个格式不正确');
+    }
+    this.addMessage = parts.length > 0 ? parts.join('，') : '';
+    // 格式错误单独用红色提示，避免被绿色汇总信息淹没
+    this.addError = invalid.length > 0
+      ? '格式不正确：' + invalid.join('、')
+      : '';
   }
 
   @Builder
   private footnote() {
-    Text('系统未向普通应用开放「读取已安装应用」的能力（查询与枚举接口均被系统服务拒绝），'
-      + '因此这里提供常见应用目录，并可手动输入包名。')
+    Text('受系统限制，普通应用无法读取「已安装应用」列表（查询与枚举接口均被系统服务拒绝），'
+      + '因此这里提供常见应用目录，新装的应用请在「添加应用」中手动输入包名。')
       .fontSize(10)
       .fontColor($r('app.color.muted'))
       .width('100%')

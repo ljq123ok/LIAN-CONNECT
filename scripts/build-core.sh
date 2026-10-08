@@ -40,6 +40,15 @@ if [ ! -f "$TS_ROOT/scripts/ohos-env.sh" ]; then
   exit 1
 fi
 
+MIHOMO_MEMORY_PATCH="$APP_ROOT/patches/mihomo-memory.patch"
+if git -C "$MIHOMO_SRC" apply --reverse --check "$MIHOMO_MEMORY_PATCH" >/dev/null 2>&1; then
+  echo "[core] mihomo memory patch already applied"
+else
+  git -C "$MIHOMO_SRC" apply --check "$MIHOMO_MEMORY_PATCH"
+  git -C "$MIHOMO_SRC" apply "$MIHOMO_MEMORY_PATCH"
+  echo "[core] applied mihomo memory patch"
+fi
+
 mkdir -p "$MIHOMO_SRC/lianbridge"
 cp "$APP_ROOT/core/bridge.go" "$MIHOMO_SRC/lianbridge/bridge.go"
 
@@ -50,7 +59,7 @@ OUT="$MIHOMO_SRC/lianbridge/libmihomo_ohos.so"
 cd "$MIHOMO_SRC"
 # Keep the replacement relative so Go build metadata cannot leak a workstation path.
 go mod edit -replace "github.com/metacubex/gvisor=$GVISOR_REPLACE"
-go build -tags with_gvisor -buildmode=c-shared -trimpath -o "$OUT" ./lianbridge
+go build -tags with_gvisor,with_low_memory -buildmode=c-shared -trimpath -o "$OUT" ./lianbridge
 
 APP_LIBS="$APP_ROOT/entry/libs/arm64-v8a"
 mkdir -p "$APP_LIBS"

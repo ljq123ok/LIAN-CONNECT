@@ -1,4 +1,4 @@
-import { socket } from '@kit.NetworkKit';
+import { http, socket } from '@kit.NetworkKit';
 import { BusinessError } from '@kit.BasicServicesKit';
 import { buffer, util } from '@kit.ArkTS';
 import { hilog } from '@kit.PerformanceAnalysisKit';
@@ -16,6 +16,40 @@ export interface LinkEndpoint {
  * 支持 ss / vmess / vless / trojan / hysteria2 / tuic。
  */
 export class LatencyTester {
+  /**
+   * 通过 mihomo 控制器让指定代理执行完整 URLTest。
+   * 这条路径会完成协议握手、认证、TLS 与 HTTP 响应校验，不再把“节点端口
+   * 能建立 TCP”误报为代理可用。核心未运行、节点不存在或测试失败均返回 -1。
+   */
+  static async testProxy(proxyName: string, testUrl: string,
+    timeoutMs: number = 10000): Promise<number> {
+    if (proxyName.length === 0 ||
+      (!testUrl.startsWith('https://') && !testUrl.startsWith('http://'))) {
+      return -1;
+    }
+    const endpoint = 'http://127.0.0.1:9090/proxies/' + encodeURIComponent(proxyName) +
+      '/delay?url=' + encodeURIComponent(testUrl) + '&timeout=' + timeoutMs + '&expected=200-399';
+    const req = http.createHttp();
+    try {
+      const response = await req.request(endpoint, {
+        method: http.RequestMethod.GET,
+        expectDataType: http.HttpDataType.STRING,
+        connectTimeout: 2000,
+        readTimeout: timeoutMs + 2000
+      });
+      if (response.responseCode < 200 || response.responseCode >= 300) {
+        return -1;
+      }
+      const parsed = JSON.parse(response.result as string) as Record<string, number>;
+      const delay = parsed['delay'];
+      return delay !== undefined && delay > 0 ? delay : -1;
+    } catch (_err) {
+      return -1;
+    } finally {
+      req.destroy();
+    }
+  }
+
   /**
    * 从单节点链接解析 host:port。
    * @returns 解析失败返回 null

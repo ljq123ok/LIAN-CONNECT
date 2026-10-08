@@ -72,6 +72,26 @@ const SECTION_KEYS: string[] = [
   'proxies:', 'proxy-groups:', 'rules:', 'proxy-providers:', 'rule-providers:'
 ];
 
+/**
+ * 卓易通内「开云体育」的真机实测域名。
+ *
+ * HarmonyOS 的 VpnConfig 只能看到卓易通容器 `com.droi.tong`，mihomo 的
+ * TUN 元数据也只给出 uid=0 且没有 process/processPath，无法用应用包名
+ * `com.opihrta.all4` 做 PROCESS-NAME 分流。这里把真机启动开云时实际捕获的
+ * 主域名置顶直连，避免把卓易通里的其它应用一并排除。
+ */
+const KAIYUN_DIRECT_SUFFIXES: string[] = [
+  'kaiyun.com',
+  'hhhjxkj.com',
+  'changjirb.com',
+  'abc2p62xs.com',
+  '108yunlang.com',
+  'pthqzpc100.com',
+  'sxzhuohong.com',
+  '0j66i5.com',
+  'h5kf5kx3.com'
+];
+
 interface ShareNode {
   server: string;
   port: string;
@@ -98,6 +118,11 @@ interface ShareNode {
 
 export class ConfigService {
   private context: common.UIAbilityContext;
+  private dnsModeForConfig: string = '智能';
+  private dnsCacheForConfig: boolean = true;
+  private fakeIpForConfig: boolean = false;
+  private sniffForConfig: boolean = true;
+  private logLevelForConfig: string = 'info';
 
   constructor(context: common.UIAbilityContext) {
     this.context = context;
@@ -105,11 +130,17 @@ export class ConfigService {
 
   generate(profile: SubscriptionProfile, subService: SubscriptionService,
     selectedNodeName: string = '', proxyMode: string = '规则',
-    testUrl: string = ''): GeneratedConfig {
+    testUrl: string = '', dnsMode: string = '智能', dnsCache: boolean = true,
+    fakeIp: boolean = false, sniff: boolean = true, logLevel: string = 'info'): GeneratedConfig {
     // 归一化测试地址：空值或非法值一律退回默认，避免把坏 URL 写进配置
     // 导致所有节点测速失败（那会让 url-test 组内无可用节点）。
     const trimmedTest: string = testUrl !== undefined && testUrl !== null ? testUrl.trim() : '';
     this.testUrlForGroups = this.isValidTestUrl(trimmedTest) ? trimmedTest : DEFAULT_TEST_URL;
+    this.dnsModeForConfig = dnsMode;
+    this.dnsCacheForConfig = dnsCache;
+    this.fakeIpForConfig = dnsMode === 'Fake-IP' || fakeIp;
+    this.sniffForConfig = sniff;
+    this.logLevelForConfig = logLevel === 'debug' ? 'debug' : 'info';
     const content = subService.loadContent(profile.id);
     if (content.length === 0) {
       throw new Error('订阅内容为空');
@@ -360,6 +391,11 @@ export class ConfigService {
     const target: string = this.resolveDefaultOutbound(section);
     const lines: string[] = section.split('\n');
     const injected: string[] = [];
+
+    // ---- 开云体育直连：必须位于订阅自带规则之前 ----
+    for (let i = 0; i < KAIYUN_DIRECT_SUFFIXES.length; i++) {
+      injected.push('  - DOMAIN-SUFFIX,' + KAIYUN_DIRECT_SUFFIXES[i] + ',DIRECT');
+    }
 
     // ---- 第 1 段：局域网 / 特殊网段直连（无条件注入）----
     // GEOIP,lan 在 NewGEOIP 里 country=="lan" 分支提前 return，**不触发**
@@ -771,6 +807,10 @@ export class ConfigService {
     // AI 流量跟随用户手动选择的出口，不再单独建「只含美国节点」的组。
     const aiTarget: string = MANUAL_GROUP;
     lines.push('rules:');
+    // 卓易通只暴露容器身份，不能按 Android 包名分流；用真机实测域名精确直连。
+    for (let i = 0; i < KAIYUN_DIRECT_SUFFIXES.length; i++) {
+      lines.push('  - DOMAIN-SUFFIX,' + KAIYUN_DIRECT_SUFFIXES[i] + ',DIRECT');
+    }
     // AI / ChatGPT 相关域名必须走代理。放在 GEOIP,CN 之前很关键：
     // GEOIP 规则基于「解析后的 IP」判断，一旦解析被污染成国内 IP，
     // 排在后面的代理兜底就再也没机会命中，表现为 ChatGPT 连不上。
@@ -874,13 +914,19 @@ export class ConfigService {
    * @param geoReady 内置 geo 数据是否就位；决定能否注入 `geosite:cn` policy。
    */
   private appendDns(lines: string[], dnsProxyName: string = '', geoReady: boolean = false): void {
-    const tag: string = this.dnsTag(dnsProxyName);
+    // 「直连」模式不得给 DoH 加代理组出口标记。
+    const tag: string = this.dnsTag(this.dnsModeForConfig === '直连' ? '' : dnsProxyName);
     const overseas: string[] = [
       'https://1.1.1.1/dns-query' + tag,
       'https://dns.google/dns-query' + tag
     ];
     lines.push('dns:');
     lines.push('  enable: true');
+    // mihomo defaults each resolver cache to 4096 entries. LIAN creates main,
+    // proxy and direct resolvers, so the default is unnecessarily large for a
+    // mobile background process. Keep a bounded cache without disabling DNS reuse.
+    // mihomo 将 0 解读为默认大缓存，所以关闭时用最小的 1 项缓存。
+    lines.push('  cache-max-size: ' + (this.dnsCacheForConfig ? '1024' : '1'));
     // VpnConfig.dnsAddresses can only advertise an IP address, so the
     // resolver always targets port 53. Keep mihomo on the standard DNS port
     // so queries stay inside the TUN instead of bypassing the core.
@@ -888,7 +934,10 @@ export class ConfigService {
     // HarmonyOS ArkWeb currently does not reliably return traffic addressed
     // to mihomo's fake-ip pool through the VPN TUN. Real answers keep the
     // route decision in mihomo while avoiding that platform-specific loop.
-    lines.push('  enhanced-mode: redir-host');
+    lines.push('  enhanced-mode: ' + (this.fakeIpForConfig ? 'fake-ip' : 'redir-host'));
+    if (this.fakeIpForConfig) {
+      lines.push('  fake-ip-range: 198.18.0.1/16');
+    }
     lines.push('  nameserver:');
     lines.push('    - 223.5.5.5');
     lines.push('    - 114.114.114.114');
@@ -1066,10 +1115,13 @@ export class ConfigService {
     lines.push('mixed-port: ' + LOCAL_MIXED_PORT);
     lines.push('allow-lan: false');
     lines.push('mode: ' + mode);
+    lines.push('log-level: ' + this.logLevelForConfig);
     lines.push('external-controller: ' + LOCAL_CONTROLLER);
     // TUN 不接受 IPv6，核心侧也关掉，避免 AAAA 悬挂
     lines.push('ipv6: false');
-    this.appendSniffer(lines);
+    if (this.sniffForConfig) {
+      this.appendSniffer(lines);
+    }
   }
 
   /**

@@ -1,6 +1,5 @@
 import { common } from '@kit.AbilityKit';
 import {
-  AppConnection,
   AppProxyRule,
   AppSettings,
   DnsServer,
@@ -10,16 +9,19 @@ import {
   RuleItem,
   SubscriptionProfile
 } from '../models/ArkModels';
-import { MockData } from '../services/MockData';
 import { SubscriptionService } from '../services/SubscriptionService';
 import { ConfigService } from '../services/ConfigService';
 import { SettingsStore } from '../services/SettingsStore';
 import { AppFilterStore } from '../services/AppFilterStore';
+import { RuntimeSettingsStore } from '../services/RuntimeSettingsStore';
 import { AppCatalog } from '../services/AppCatalog';
 import { VpnService } from '../services/VpnService';
 import { LatencyTester } from '../services/LatencyTester';
 import { CoreConnection, CoreStatusStore } from '../services/CoreStatusStore';
 import { hilog } from '@kit.PerformanceAnalysisKit';
+import { pasteboard } from '@kit.BasicServicesKit';
+import { fileIo, picker } from '@kit.CoreFileKit';
+import { notificationManager } from '@kit.NotificationKit';
 import { Fmt } from '../common/Format';
 import { HomePage } from './HomePage';
 import { NodesPage } from './NodesPage';
@@ -35,6 +37,10 @@ const DOMAIN = 0x2020;
 const TAG = 'LianIndex';
 /** 与 ConfigService 的 MANUAL_GROUP 保持一致：实际承载分流的 select 组 */
 const MANUAL_GROUP_NAME = '手动选择';
+const CONNECTIONS_VISIBLE_SNAPSHOT_INTERVAL_MS = 5000;
+const FOREGROUND_SNAPSHOT_INTERVAL_MS = 30000;
+const BACKGROUND_SNAPSHOT_INTERVAL_MS = 60000;
+const VPN_NOTIFICATION_ID = 2002;
 
 interface NavItem {
   id: string;
@@ -59,18 +65,17 @@ struct Index {
   @State private selectedPage: string = 'home';
   @State private connected: boolean = false;
   @State private connecting: boolean = false;
-  @State private selectedNode: string = '香港 HK-01';
+  @State private selectedNode: string = '';
   @State private nodeCount: number = 0;
   @State private subscriptionName: string = '';
   @State private importMessage: string = '';
   @State private statusMessage: string = '';
-  @State private nodeGroups: ProxyGroup[] = MockData.nodeGroups();
-  @State private connections: AppConnection[] = MockData.connections();
-  @State private rules: RuleItem[] = MockData.rules();
-  @State private events: RecoveryEvent[] = MockData.events();
-  @State private dnsServers: DnsServer[] = MockData.dnsServers();
+  @State private nodeGroups: ProxyGroup[] = [];
   @State private proxyMode: string = '规则';
   @State private dnsMode: string = '智能';
+  @State private dnsCache: boolean = true;
+  @State private fakeIp: boolean = false;
+  @State private sniff: boolean = true;
   @State private onboardingStep: number = 1;
   @State private onboardingChoice: string = 'standard';
   @State private onboardingDone: boolean = false;
@@ -124,6 +129,7 @@ struct Index {
   private configService?: ConfigService;
   private settingsStore?: SettingsStore;
   private appFilterStore?: AppFilterStore;
+  private runtimeSettingsStore?: RuntimeSettingsStore;
   private vpnService: VpnService = new VpnService();
   private coreStatusStore?: CoreStatusStore;
   private statsTimer: number = -1;
@@ -172,6 +178,7 @@ struct Index {
     this.configService = new ConfigService(context);
     this.settingsStore = new SettingsStore(context);
     this.appFilterStore = new AppFilterStore(context);
+    this.runtimeSettingsStore = new RuntimeSettingsStore(context);
     this.coreStatusStore = new CoreStatusStore(context);
     this.onboardingDone = this.settingsStore.loadOnboardingDone();
     const settings = this.settingsStore.load();
@@ -183,12 +190,16 @@ struct Index {
     this.logLevel = settings.logLevel;
     this.testUrl = settings.testUrl;
     this.dnsMode = settings.dnsMode;
+    this.dnsCache = settings.dnsCache;
+    this.fakeIp = settings.fakeIp;
+    this.sniff = settings.sniff;
     this.proxyMode = settings.proxyMode;
     this.perAppProxyEnabled = settings.perAppProxyEnabled;
     this.excludedApps = this.settingsStore.loadExcludedApps();
     this.customApps = this.settingsStore.loadCustomApps();
     // 启动即同步一次，保证「上次的配置」在未进设置页时也生效
     this.syncAppFilterToFile();
+    this.syncRuntimeSettingsToFile();
     // 核心状态监视器常驻运行：连接状态与上下行/连接数全部以内核心跳为真实依据
     this.startStatsPolling();
     this.reloadSubscriptions();
@@ -211,6 +222,13 @@ struct Index {
       setTimeout(() => {
         this.autoConnectOnLaunch();
       }, 1500);
+    }
+    // 通知是系统授权能力：旧版只存了开关，从未请求权限，
+    // 导致开关默认为开但 publish 必然失败。启动后延迟请求，避免与首帧创建竞争。
+    if (this.notificationOn) {
+      setTimeout(() => {
+        this.enableNotificationsAndSync();
+      }, 800);
     }
   }
 
@@ -281,8 +299,7 @@ struct Index {
             .height(36)
             .padding({ left: 12, right: 12 })
             .onClick(() => {
-              this.selectedPage = item.id;
-              this.statusMessage = '';
+              this.navigateTo(item.id);
             })
         }, (item: NavItem) => item.id)
       }
@@ -327,10 +344,10 @@ struct Index {
           this.toggleVpn();
         },
         onGotoNodes: (): void => {
-          this.selectedPage = 'nodes';
+          this.navigateTo('nodes');
         },
         onGotoDiagnostics: (): void => {
-          this.selectedPage = 'diagnostics';
+          this.navigateTo('diagnostics');
         },
         onTestLatency: (): void => {
           this.testSelectedNodeLatency();
@@ -351,8 +368,7 @@ struct Index {
         onFinish: (): void => {
           this.onboardingDone = true;
           this.settingsStore?.saveOnboardingDone(true);
-          this.selectedPage = 'home';
-          this.statusMessage = '';
+          this.navigateTo('home');
         },
         onPrev: (): void => {
           if (this.onboardingStep > 1) {
@@ -386,8 +402,22 @@ struct Index {
           this.testAllNodes();
         },
         testingAll: this.testingAll,
+        // 节点页的 ⟳ 必须复用「重新下载订阅」这条真实链路。
+        //
+        // 此前这里只写了一句 importMessage = '节点列表已刷新'，既不重新下载、
+        // 也不重读本地订阅文件、更不重建 nodeGroups —— 而 nodeGroups 只在
+        // 启动、导入、切换订阅时被 applyProfile 赋值，所以节点页展示的永远是
+        // 「启动那一刻的快照」。用户点刷新看到提示语变了、列表却纹丝不动，
+        // 即「点击更新无法正常更新」。设置页的订阅管理走的是
+        // refreshSubscriptionById（下载 → 重读 → applyProfile 重建列表），
+        // 那条路是通的，这里改为复用同一实现，避免两套行为再次分叉。
         onRefresh: (): void => {
-          this.importMessage = '节点列表已刷新';
+          const id: string = this.activeSubId;
+          if (id.length === 0) {
+            this.importMessage = '未配置订阅，请先用「＋」导入';
+            return;
+          }
+          this.refreshSubscriptionById(id);
         }
       })
     } else if (this.selectedPage === 'connections') {
@@ -415,8 +445,13 @@ struct Index {
         dnsMode: this.dnsMode,
         coreDnsMode: this.dnsEnhancedMode,
         servers: this.realDns,
-        onModeChange: (mode: string): void => {
-          this.dnsMode = mode;
+        dnsCache: this.dnsCache,
+        fakeIp: this.fakeIp,
+        sniff: this.sniff,
+        failClosed: this.failClosed,
+        onSettingsChange: (mode: string, dnsCache: boolean, fakeIp: boolean,
+          sniff: boolean, failClosed: boolean): void => {
+          this.updateDnsSettings(mode, dnsCache, fakeIp, sniff, failClosed);
         }
       })
     } else if (this.selectedPage === 'apps') {
@@ -451,10 +486,10 @@ struct Index {
           this.exportReport();
         },
         onCopy: (): void => {
-          this.statusMessage = '诊断日志已复制到剪贴板';
+          this.copyDiagnostics();
         },
         onClear: (): void => {
-          this.events = [];
+          this.clearDiagnostics();
         }
       })
     } else if (this.selectedPage === 'settings') {
@@ -474,11 +509,10 @@ struct Index {
           this.selectSubscriptionById(id);
         },
         onGotoNodes: (): void => {
-          this.selectedPage = 'nodes';
+          this.navigateTo('nodes');
         },
         onClearDiagnostics: (): void => {
-          this.recoveryEvents = [];
-          this.statusMessage = '诊断记录已清空';
+          this.clearDiagnostics();
         },
         autoConnect: this.autoConnect,
         networkRecover: this.networkRecover,
@@ -488,13 +522,16 @@ struct Index {
         logLevel: this.logLevel,
         testUrl: this.testUrl,
         dnsMode: this.dnsMode,
+        dnsCache: this.dnsCache,
+        fakeIp: this.fakeIp,
+        sniff: this.sniff,
         proxyMode: this.proxyMode,
         perAppProxyEnabled: this.perAppProxyEnabled,
         onSave: (settings: AppSettings): void => {
           this.saveSettings(settings);
         },
         onTestConnection: (): void => {
-          this.statusMessage = '连通性测试成功，延迟 122 ms';
+          this.testConnection();
         }
       })
     }
@@ -505,6 +542,30 @@ struct Index {
       return NAV_ITEMS.filter((item: NavItem) => item.id !== 'onboard');
     }
     return NAV_ITEMS;
+  }
+
+  /** 切页时同步连接快照频率，并释放非连接页不再需要的明细数组。 */
+  private navigateTo(page: string): void {
+    const leavingConnections: boolean = this.selectedPage === 'connections' && page !== 'connections';
+    this.selectedPage = page;
+    this.statusMessage = '';
+    if (leavingConnections) {
+      this.realConnections = [];
+      this.connSignature = '';
+    }
+    this.updateConnectionSnapshotCadence(false);
+    if (page === 'connections') {
+      this.refreshConnections();
+    }
+  }
+
+  private updateConnectionSnapshotCadence(background: boolean): void {
+    const intervalMs: number = background
+      ? BACKGROUND_SNAPSHOT_INTERVAL_MS
+      : (this.selectedPage === 'connections'
+        ? CONNECTIONS_VISIBLE_SNAPSHOT_INTERVAL_MS
+        : FOREGROUND_SNAPSHOT_INTERVAL_MS);
+    this.coreStatusStore?.requestConnectionSnapshotInterval(intervalMs);
   }
 
   private pageTitle(): string {
@@ -553,6 +614,9 @@ struct Index {
   onPageHide(): void {
     // 记录进入后台的时刻，供回到前台时判断「离开了多久」
     this.hiddenAt = Date.now();
+    this.updateConnectionSnapshotCadence(true);
+    this.realConnections = [];
+    this.connSignature = '';
     this.stopStatsPollingTimer();
   }
 
@@ -562,6 +626,7 @@ struct Index {
     hilog.info(DOMAIN, TAG, 'resume from background, grace=%{public}dms',
       this.resumeGraceMs());
     this.hiddenAt = 0;
+    this.updateConnectionSnapshotCadence(false);
     this.startStatsPolling();
   }
 
@@ -601,6 +666,8 @@ struct Index {
     this.healthDelay = 0;
     this.coreCurrentNode = '';
     this.coreMemory = 0;
+    this.realConnections = [];
+    this.connSignature = '';
   }
 
   /**
@@ -705,7 +772,9 @@ struct Index {
       if (status.startedAt > 0) {
         this.sessionStart = status.startedAt;
       }
-      this.refreshConnections();
+      if (this.selectedPage === 'connections') {
+        this.refreshConnections();
+      }
       if (!this.connected) {
         this.connected = true;
         this.refreshRulesAndDns();
@@ -923,6 +992,9 @@ struct Index {
         failClosed: current.failClosed,
         notificationOn: current.notificationOn,
         dnsMode: current.dnsMode,
+        dnsCache: current.dnsCache,
+        fakeIp: current.fakeIp,
+        sniff: current.sniff,
         proxyMode: mode,
         logLevel: current.logLevel,
         testUrl: current.testUrl,
@@ -973,16 +1045,18 @@ struct Index {
     this.recoveryEvents = list;
   }
 
-  /** 对当前选中节点做真实 TCP 连接测速（非模拟值） */
+  /** 对当前选中节点执行 mihomo 完整代理 URLTest。 */
   private async testSelectedNodeLatency(): Promise<void> {
     if (this.latencyTesting) {
       return;
     }
-    const node = this.findNode(this.selectedNode);
-    const link = node?.link ?? '';
-    if (link.length === 0) {
-      this.statusMessage = '当前节点缺少可用地址，无法测速';
-      this.pushEvent('测速失败', this.selectedNode + ' · 缺少可用地址', 'warn');
+    if (!this.connected) {
+      this.statusMessage = '请先连接 VPN，再进行真实代理测速';
+      return;
+    }
+    if (this.findNode(this.selectedNode) === undefined) {
+      this.statusMessage = '当前节点不存在，无法测速';
+      this.pushEvent('测速失败', '当前节点不存在', 'warn');
       return;
     }
     this.latencyTesting = true;
@@ -993,7 +1067,7 @@ struct Index {
     // 与异常路径无关。
     let latency: number = -1;
     try {
-      latency = await LatencyTester.test(link);
+      latency = await LatencyTester.testProxy(this.selectedNode, this.testUrl);
     } finally {
       this.latencyTesting = false;
     }
@@ -1051,12 +1125,18 @@ struct Index {
     this.connected = false;
     this.sessionStart = 0;
     this.clearLiveStats();
-    this.pushEvent('隧道已中断', '连接已失效，正在尝试恢复', 'warn');
-    this.autoRestartTunnel();
+    if (this.networkRecover) {
+      this.pushEvent('隧道已中断', '连接已失效，正在尝试恢复', 'warn');
+      this.autoRestartTunnel();
+    } else {
+      this.pushEvent('隧道已中断', '自动恢复已关闭', 'warn');
+      this.statusMessage = '隧道已中断，请手动重连';
+    }
+    this.syncConnectionNotification(false);
   }
 
   private async autoRestartTunnel(): Promise<void> {
-    if (this.connecting) {
+    if (!this.networkRecover || this.connecting) {
       return;
     }
     const now: number = Date.now();
@@ -1123,6 +1203,7 @@ struct Index {
         this.sessionStart = 0;
         this.statusMessage = 'VPN 已断开';
         this.pushEvent('VPN 已断开', '隧道已关闭，网络恢复直连', 'info');
+        this.syncConnectionNotification(false);
       } else {
         this.statusMessage = result.error ?? 'VPN 停止失败';
         this.pushEvent('断开失败', result.error ?? '停止 VPN 扩展失败', 'warn');
@@ -1145,7 +1226,8 @@ struct Index {
       // 把设置页的「延迟测试地址」传下去：三处策略组的 url-test 都用它，
       // 这样该设置才真正生效（此前它只被读写、无人消费）。
       this.configService.generate(active, this.subService, this.selectedNode,
-        this.proxyMode, this.testUrl);
+        this.proxyMode, this.testUrl, this.dnsMode, this.dnsCache,
+        this.fakeIp, this.sniff, this.logLevel);
     } catch (err) {
       this.connecting = false;
       this.statusMessage = err instanceof Error ? err.message : '配置生成失败';
@@ -1188,6 +1270,7 @@ struct Index {
       // 调用一次，连接/重连路径从未下发，所以每次重连都会丢选择。
       this.applySavedNodeSelection();
       this.pushEvent('VPN 已连接', '出口节点 ' + this.selectedNode, 'ok');
+      this.syncConnectionNotification(true);
     } else {
       this.statusMessage = result.error ?? 'VPN 启动失败';
       this.pushEvent('连接失败', this.statusMessage, 'warn');
@@ -1332,14 +1415,17 @@ struct Index {
 
   private async testNode(name: string): Promise<void> {
     const target = this.findNode(name);
-    const link = target?.link ?? '';
-    if (target === undefined || link.length === 0) {
+    if (!this.connected) {
+      this.statusMessage = '请先连接 VPN，再进行真实代理测速';
+      return;
+    }
+    if (target === undefined) {
       this.updateNodeLatency(name, -1);
-      this.statusMessage = name + ' 无可用测速地址';
+      this.statusMessage = name + ' 不存在';
       return;
     }
     this.statusMessage = name + ' 测速中...';
-    const latency = await LatencyTester.test(link);
+    const latency = await LatencyTester.testProxy(name, this.testUrl);
     this.updateNodeLatency(name, latency);
     this.statusMessage = latency > 0 ? name + ' 延迟 ' + latency + ' ms' : name + ' 连接超时';
   }
@@ -1367,6 +1453,10 @@ struct Index {
       this.statusMessage = '暂无节点可测速';
       return;
     }
+    if (!this.connected) {
+      this.statusMessage = '请先连接 VPN，再进行真实代理测速';
+      return;
+    }
     this.testingAll = true;
     this.statusMessage = '正在测速 ' + all.length + ' 个节点...';
     // 测速结果先累积，批量刷新状态：逐条更新会让长列表持续全量重渲染（卡顿主因）
@@ -1392,8 +1482,7 @@ struct Index {
       while (index < all.length) {
         const node = all[index];
         index++;
-        const link = node.link ?? '';
-        const latency = link.length > 0 ? await LatencyTester.test(link) : -1;
+        const latency = await LatencyTester.testProxy(node.name, this.testUrl);
         pending.set(node.name, latency);
         flush();
       }
@@ -1423,20 +1512,104 @@ struct Index {
   }
 
   private saveSettings(settings: AppSettings): void {
+    const notificationWasOn: boolean = this.notificationOn;
     this.settingsStore?.save(settings);
     this.autoConnect = settings.autoConnect;
     this.networkRecover = settings.networkRecover;
     this.screenKeep = settings.screenKeep;
     this.failClosed = settings.failClosed;
     this.notificationOn = settings.notificationOn;
+    this.dnsMode = settings.dnsMode;
+    this.dnsCache = settings.dnsCache;
+    this.fakeIp = settings.fakeIp;
+    this.sniff = settings.sniff;
     this.logLevel = settings.logLevel;
     this.testUrl = settings.testUrl;
+    this.syncRuntimeSettingsToFile();
     // 分应用开关若在设置页被改动，一并同步到扩展可读的文件
     if (settings.perAppProxyEnabled !== this.perAppProxyEnabled) {
       this.perAppProxyEnabled = settings.perAppProxyEnabled;
       this.syncAppFilterToFile();
     }
-    this.statusMessage = '设置已保存';
+    if (!settings.notificationOn) {
+      this.syncConnectionNotification(false);
+    } else if (!notificationWasOn) {
+      this.enableNotificationsAndSync();
+    } else if (this.connected) {
+      this.syncConnectionNotification(true);
+    }
+    this.statusMessage = this.connected ? '设置已保存，需重连的项目将在下次连接生效' : '设置已保存';
+  }
+
+  private updateDnsSettings(mode: string, dnsCache: boolean, fakeIp: boolean,
+    sniff: boolean, failClosed: boolean): void {
+    if (this.settingsStore === undefined) {
+      return;
+    }
+    const current: AppSettings = this.settingsStore.load();
+    const updated: AppSettings = {
+      autoConnect: current.autoConnect,
+      networkRecover: current.networkRecover,
+      screenKeep: current.screenKeep,
+      failClosed: failClosed,
+      notificationOn: current.notificationOn,
+      dnsMode: mode,
+      dnsCache: dnsCache,
+      fakeIp: mode === 'Fake-IP' || fakeIp,
+      sniff: sniff,
+      proxyMode: current.proxyMode,
+      logLevel: current.logLevel,
+      testUrl: current.testUrl,
+      perAppProxyEnabled: current.perAppProxyEnabled
+    };
+    this.saveSettings(updated);
+  }
+
+  /** 同步到 VPN 扩展进程；VpnConfig 类开关需重连后生效。 */
+  private syncRuntimeSettingsToFile(): void {
+    if (this.runtimeSettingsStore === undefined) {
+      return;
+    }
+    try {
+      this.runtimeSettingsStore.save({
+        networkRecover: this.networkRecover,
+        failClosed: this.failClosed
+      });
+    } catch (err) {
+      this.statusMessage = err instanceof Error ? err.message : '运行时设置写入失败';
+    }
+  }
+
+  private async enableNotificationsAndSync(): Promise<void> {
+    try {
+      await notificationManager.requestEnableNotification(this.getAbilityContext());
+      await this.syncConnectionNotification(this.connected);
+    } catch (_err) {
+      this.statusMessage = '系统未授予通知权限';
+    }
+  }
+
+  private async syncConnectionNotification(vpnConnected: boolean): Promise<void> {
+    try {
+      if (!this.notificationOn || !vpnConnected) {
+        await notificationManager.cancel(VPN_NOTIFICATION_ID);
+        return;
+      }
+      await notificationManager.publish({
+        id: VPN_NOTIFICATION_ID,
+        notificationSlotType: notificationManager.SlotType.SERVICE_INFORMATION,
+        isOngoing: true,
+        content: {
+          notificationContentType: notificationManager.ContentType.NOTIFICATION_CONTENT_BASIC_TEXT,
+          normal: {
+            title: 'LIAN CONNECT 已连接',
+            text: this.selectedNode.length > 0 ? '当前节点：' + this.selectedNode : 'VPN 隧道正在运行'
+          }
+        }
+      });
+    } catch (_err) {
+      // 通知是辅助状态，发布失败不影响 VPN 数据面。
+    }
   }
 
   // ===== 分应用代理 =====
@@ -1469,6 +1642,9 @@ struct Index {
         failClosed: current.failClosed,
         notificationOn: current.notificationOn,
         dnsMode: current.dnsMode,
+        dnsCache: current.dnsCache,
+        fakeIp: current.fakeIp,
+        sniff: current.sniff,
         proxyMode: current.proxyMode,
         logLevel: current.logLevel,
         testUrl: current.testUrl,
@@ -1535,8 +1711,87 @@ struct Index {
     return true;
   }
 
+  private async testConnection(): Promise<void> {
+    if (!this.connected || this.selectedNode.length === 0) {
+      this.statusMessage = '请先连接 VPN，再测试真实代理连通性';
+      return;
+    }
+    this.statusMessage = '正在通过当前节点测试连通性...';
+    const latency = await LatencyTester.testProxy(this.selectedNode, this.testUrl);
+    if (latency > 0) {
+      this.statusMessage = '连通性测试成功，延迟 ' + latency + ' ms';
+      this.pushEvent('连通性测试', this.selectedNode + ' · ' + latency + ' ms', 'ok');
+    } else {
+      this.statusMessage = '连通性测试失败，请检查节点或测试地址';
+      this.pushEvent('连通性测试失败', this.selectedNode, 'warn');
+    }
+  }
+
+  private diagnosticsText(): string {
+    const lines: string[] = [];
+    lines.push('LIAN CONNECT 诊断报告');
+    lines.push('生成时间: ' + new Date().toISOString());
+    lines.push('核心状态: ' + (this.coreRunning ? '运行中' : '未运行'));
+    lines.push('核心版本: ' + (this.coreVersion.length > 0 ? this.coreVersion : '未知'));
+    lines.push('运行模式: ' + this.coreMode);
+    lines.push('TUN fd: ' + this.tunFd);
+    lines.push('活跃连接: ' + this.activeConnections);
+    lines.push('代理连接: ' + this.proxyConnections);
+    lines.push('代理下行字节: ' + this.downTotal);
+    lines.push('代理上行字节: ' + this.upTotal);
+    lines.push('恢复次数: ' + this.recoverCount);
+    lines.push('');
+    lines.push('事件:');
+    if (this.recoveryEvents.length === 0) {
+      lines.push('- 无');
+    } else {
+      for (let i = 0; i < this.recoveryEvents.length; i++) {
+        const event = this.recoveryEvents[i];
+        lines.push('- [' + event.time + '] ' + event.title + ': ' + event.desc);
+      }
+    }
+    return lines.join('\n');
+  }
+
+  private async copyDiagnostics(): Promise<void> {
+    try {
+      const data = pasteboard.createData(pasteboard.MIMETYPE_TEXT_PLAIN, this.diagnosticsText());
+      await pasteboard.getSystemPasteboard().setData(data);
+      this.statusMessage = '诊断日志已复制到剪贴板';
+    } catch (_err) {
+      this.statusMessage = '复制诊断日志失败';
+    }
+  }
+
+  private async exportDiagnostics(): Promise<void> {
+    try {
+      const options = new picker.DocumentSaveOptions();
+      const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+      options.newFileNames = ['LIAN-diagnostics-' + stamp + '.txt'];
+      const uris = await new picker.DocumentViewPicker(this.getAbilityContext()).save(options);
+      if (uris.length === 0) {
+        this.statusMessage = '已取消导出';
+        return;
+      }
+      const file = fileIo.openSync(uris[0], fileIo.OpenMode.WRITE_ONLY | fileIo.OpenMode.TRUNC);
+      try {
+        fileIo.writeSync(file.fd, this.diagnosticsText());
+      } finally {
+        fileIo.closeSync(file.fd);
+      }
+      this.statusMessage = '诊断报告已导出';
+    } catch (_err) {
+      this.statusMessage = '导出诊断报告失败';
+    }
+  }
+
+  private clearDiagnostics(): void {
+    this.recoveryEvents = [];
+    this.statusMessage = '诊断记录已清空';
+  }
+
   private exportReport(): void {
-    this.statusMessage = '诊断报告已导出';
+    this.exportDiagnostics();
   }
 
   private getAbilityContext(): common.UIAbilityContext {

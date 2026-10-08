@@ -79,7 +79,7 @@ export class CoreStatusStore {
     return parsed;
   }
 
-  /** 活跃连接明细（由扩展每秒写出） */
+  /** 活跃连接明细（扩展按页面可见性以 5/30/60 秒频率写出） */
   readConnections(): ConnectionsSnapshot | undefined {
     const raw = this.readText(this.connectionsPath);
     if (raw === undefined) {
@@ -137,6 +137,15 @@ export class CoreStatusStore {
   /** 关闭全部连接 */
   requestCloseAll(): boolean {
     const cmd: ModeCommand = { seq: Date.now(), closeAll: true };
+    return this.writeCommand(cmd);
+  }
+
+  /** 调整完整连接快照频率；1 秒状态心跳不受影响。 */
+  requestConnectionSnapshotInterval(intervalMs: number): boolean {
+    const cmd: ModeCommand = {
+      seq: Date.now(),
+      connectionSnapshotIntervalMs: intervalMs
+    };
     return this.writeCommand(cmd);
   }
 
@@ -213,4 +222,6 @@ export interface ModeCommand {
   selectGroup?: string;
   /** 手动指定的节点名 */
   selectNode?: string;
+  /** 完整连接快照的写入间隔；由扩展限制在 5~60 秒 */
+  connectionSnapshotIntervalMs?: number;
 }

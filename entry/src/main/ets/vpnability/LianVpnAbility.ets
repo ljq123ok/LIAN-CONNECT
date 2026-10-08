@@ -5,6 +5,7 @@ import fileIo from '@ohos.file.fs';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import * as lianbridge from 'liblianbridge.so';
 import { AppFilterReader } from '../services/AppFilterStore';
+import { RuntimeSettingsReader } from '../services/RuntimeSettingsStore';
 
 const DOMAIN = 0x2020;
 const TAG = 'LianVpn';
@@ -14,6 +15,8 @@ const VPN_IP = '10.6.0.2';
 const MANUAL_GROUP_NAME = '手动选择';
 const TUN_RECOVER_BASE_DELAY_MS = 5 * 60 * 1000;
 const TUN_RECOVER_MAX_ATTEMPTS = 3;
+const CONNECTION_SNAPSHOT_MIN_INTERVAL_MS = 5000;
+const CONNECTION_SNAPSHOT_BACKGROUND_INTERVAL_MS = 60000;
 
 /**
  * 排除集合走哪个 VpnConfig 字段 —— 单点可翻转的实测开关。
@@ -110,6 +113,8 @@ interface CoreCommand {
   selectGroup?: string;
   /** 手动指定的节点名 */
   selectNode?: string;
+  /** 完整连接快照的写入间隔；状态心跳仍固定为 1 秒 */
+  connectionSnapshotIntervalMs?: number;
   appliedAt?: number;
 }
 
@@ -117,6 +122,8 @@ export default class LianVpnAbility extends VpnExtensionAbility {
   private conn?: vpnExtension.VpnConnection;
   private pollTimer: number = -1;
   private lastCommandSeq: number = -1;
+  private lastConnectionsSnapshotAt: number = 0;
+  private connectionSnapshotIntervalMs: number = CONNECTION_SNAPSHOT_BACKGROUND_INTERVAL_MS;
   /**
    * 自愈计数（已重建次数，会写入状态文件供界面展示）。
    * 注意：连续失败计数由 Go 侧 coreHealth.failStreak 维护，这里不再重复累计
@@ -234,6 +241,7 @@ export default class LianVpnAbility extends VpnExtensionAbility {
       isDefaultRoute: true
     }];
     const appLists: AppListSelection = this.buildAppLists();
+    const runtime = RuntimeSettingsReader.read(this.context.filesDir);
     const config: vpnExtension.VpnConfig = {
       addresses: addresses,
       routes: routes,
@@ -242,7 +250,8 @@ export default class LianVpnAbility extends VpnExtensionAbility {
       mtu: 1400,
       isIPv4Accepted: true,
       isIPv6Accepted: false,
-      isBlocking: true,
+      // 「断线阻断」不再是界面假开关：连接创建时真正下发平台 VPN。
+      isBlocking: runtime.failClosed,
       blockedApplications: appLists.blocked
     };
     // 只下发非空的那一侧。
@@ -324,6 +333,7 @@ export default class LianVpnAbility extends VpnExtensionAbility {
   private startPolling(homeDir: string): void {
     // 核心启动时刻即“保护开始”时刻，用于首页真实展示已保护时长
     const startedAt: number = Date.now();
+    this.lastConnectionsSnapshotAt = 0;
     this.pollTimer = setInterval(() => {
       try {
         const raw: string = lianbridge.status();
@@ -353,8 +363,16 @@ export default class LianVpnAbility extends VpnExtensionAbility {
           ts: Date.now()
         };
         this.writeTextFileSync(homeDir + '/core-status.json', JSON.stringify(enriched));
-        // 真实连接明细（供“实时连接”页面）
-        this.writeTextFileSync(homeDir + '/core-connections.json', lianbridge.connections());
+        // 心跳保持 1 秒，但完整连接快照会遍历、排序、JSON 序列化
+        // 所有活跃连接。由前台页面按需在 5/30 秒之间切换，后台降到
+        // 60 秒一次，避免持续制造大量
+        // 短命对象并抬高 Go/ArkTS 两侧的内存高水位。
+        const now: number = Date.now();
+        if (this.lastConnectionsSnapshotAt === 0 ||
+          now - this.lastConnectionsSnapshotAt >= this.connectionSnapshotIntervalMs) {
+          this.writeTextFileSync(homeDir + '/core-connections.json', lianbridge.connections());
+          this.lastConnectionsSnapshotAt = now;
+        }
         // 链路健康探测 + 自愈（每 30 秒一次，扩展进程在后台不会被冻结）
         this.tickHealthWatchdog(parsed, homeDir);
       } catch (_err) {
@@ -412,6 +430,12 @@ export default class LianVpnAbility extends VpnExtensionAbility {
     if (detail !== 'tun listener disabled') {
       hilog.warn(DOMAIN, TAG,
         'tunnel unhealthy (confirmed); keep tun and wait for network recovery');
+      return;
+    }
+    // 用户关闭「网络切换自动恢复」时，扩展进程也不得绕过 UI 自行重建。
+    const runtime = RuntimeSettingsReader.read(this.context.filesDir);
+    if (!runtime.networkRecover) {
+      hilog.warn(DOMAIN, TAG, 'tun recovery disabled by runtime setting');
       return;
     }
     if (now < this.nextTunRecoverAt) {
@@ -511,6 +535,16 @@ export default class LianVpnAbility extends VpnExtensionAbility {
         if (result.length > 0) {
           this.writeTextFileSync(homeDir + '/core-status.json', result);
         }
+      }
+      if (cmd.connectionSnapshotIntervalMs !== undefined &&
+        cmd.connectionSnapshotIntervalMs !== null) {
+        let intervalMs: number = cmd.connectionSnapshotIntervalMs;
+        if (intervalMs < CONNECTION_SNAPSHOT_MIN_INTERVAL_MS) {
+          intervalMs = CONNECTION_SNAPSHOT_MIN_INTERVAL_MS;
+        } else if (intervalMs > CONNECTION_SNAPSHOT_BACKGROUND_INTERVAL_MS) {
+          intervalMs = CONNECTION_SNAPSHOT_BACKGROUND_INTERVAL_MS;
+        }
+        this.connectionSnapshotIntervalMs = intervalMs;
       }
       if (cmd.closeAll === true) {
         lianbridge.closeConnection('');

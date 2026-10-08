@@ -70,22 +70,22 @@ export class AppCatalog {
     { bundleName: 'com.qidian.reader', appName: '起点读书', proxied: true },
     { bundleName: 'com.yuewen.authorapphm', appName: '作家助手', proxied: true },
     { bundleName: 'com.xingin.xhs_hos', appName: '小红书', proxied: true },
-    { bundleName: 'com.phoenix.read.next', appName: '番茄小说', proxied: true },
+    { bundleName: 'com.phoenix.read.next', appName: '红果免费短剧', proxied: true },
     { bundleName: 'com.coolapk.hmclient', appName: '酷安', proxied: true },
     { bundleName: 'com.dgtle.app', appName: '数字尾巴', proxied: true },
     { bundleName: 'com.max.hos.xiaoheihe', appName: '小黑盒', proxied: true },
 
     // ---- 工具 / 办公 ----
-    { bundleName: 'com.huawei.hmos.browser', appName: '华为浏览器', proxied: true },
-    { bundleName: 'com.quark.ohosbrowser', appName: '夸克浏览器', proxied: true },
-    { bundleName: 'cn.wps.mobileoffice.hap', appName: 'WPS Office', proxied: true },
+    { bundleName: 'com.huawei.hmos.browser', appName: '浏览器', proxied: true },
+    { bundleName: 'com.quark.ohosbrowser', appName: '夸克', proxied: true },
+    { bundleName: 'cn.wps.mobileoffice.hap', appName: 'WPS移动版', proxied: true },
     { bundleName: 'com.intsig.camscanner.hap', appName: '扫描全能王', proxied: true },
     { bundleName: 'com.baidu.netdisk.hmos', appName: '百度网盘', proxied: true },
     { bundleName: 'com.sogou.input', appName: '搜狗输入法', proxied: true },
 
     // ---- 金融 / 出行 / 运营商 ----
     { bundleName: 'com.unionpay.hmos.wallet', appName: '云闪付', proxied: true },
-    { bundleName: 'com.huawei.hmos.wallet', appName: '华为钱包', proxied: true },
+    { bundleName: 'com.huawei.hmos.wallet', appName: '钱包', proxied: true },
     { bundleName: 'cn.gov.tax.its.hm', appName: '个人所得税', proxied: true },
     { bundleName: 'cn.hsa.app.hos', appName: '国家医保服务平台', proxied: true },
     { bundleName: 'com.chinamobile.cmcc', appName: '中国移动', proxied: true },
@@ -98,7 +98,22 @@ export class AppCatalog {
 
     // ---- 其它 ----
     { bundleName: 'com.ezviz.videogo', appName: '萤石云视频', proxied: true },
-    { bundleName: 'com.huawei.hmos.health', appName: '运动健康', proxied: true }
+    { bundleName: 'com.huawei.hmos.health', appName: '运动健康', proxied: true },
+
+    // ---- 本地 / 自签应用 ----
+    // 这几条取自本机 `bm dump -a -l` 实测：它们不在应用市场目录里，
+    // 若用户不手动添加就永远不会出现在列表里（见类注释：无法运行时枚举）。
+    // 维护方式：装完新的自签应用后，用 `hdc shell bm dump -n <包名> -l` 取真实
+    // 显示名，再补一行到这里——这是本文件唯一需要随设备变化而更新的地方。
+    { bundleName: 'com.easy.hmos.abroad', appName: '出境易', proxied: true },
+    { bundleName: 'com.droi.tong', appName: '卓易通', proxied: true },
+    { bundleName: 'com.hps2.jitprobe', appName: 'Hps2', proxied: true },
+    { bundleName: 'com.hps3.jitprobe', appName: 'hps3', proxied: true },
+    { bundleName: 'com.legado.app', appName: '开源阅读', proxied: true },
+    { bundleName: 'com.tzmutone.mutongji', appName: '木木记账', proxied: true },
+    { bundleName: 'com.youdroid.copohub', appName: 'CopoHub', proxied: true },
+    { bundleName: 'com.yunmai.hmhaoqing', appName: '好轻', proxied: true },
+    { bundleName: 'com.zuler.ohosapp.todesk', appName: 'ToDesk', proxied: true }
   ];
 
   /** 内置目录（按名称排序，供列表展示） */
@@ -170,5 +185,31 @@ export class AppCatalog {
       }
     }
     return true;
+  }
+
+  /**
+   * 把一段「批量输入」解析成包名数组。
+   *
+   * 为什么需要：本工程无法枚举已安装应用（见类注释），只能靠用户手动录入。
+   * 因此把录入体验做顺是唯一能接近「自动」的补偿手段——允许一次粘贴多个包名，
+   * 按换行 / 逗号 / 分号 / 空白切分，并去掉重复项。
+   *
+   * 只做切分与去重，**不做格式校验**：调用方需要知道哪些条目非法才能给出
+   * 准确提示，全部静默丢弃会让用户以为输入没生效。
+   */
+  static parseBundleNames(input: string): string[] {
+    const out: string[] = [];
+    // 换行、逗号（中英文）、分号（中英文）、制表符、空格都视为分隔符
+    const parts: string[] = input.split(/[\n\r,，;；\t ]+/);
+    for (let i = 0; i < parts.length; i++) {
+      const name = parts[i].trim();
+      if (name.length === 0) {
+        continue;
+      }
+      if (out.indexOf(name) < 0) {
+        out.push(name);
+      }
+    }
+    return out;
   }
 }

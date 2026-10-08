@@ -146,6 +146,9 @@ export struct SettingsPage {
    * 选过的 DNS 与出站模式重置掉。
    */
   @Prop dnsMode: string = '智能';
+  @Prop dnsCache: boolean = true;
+  @Prop fakeIp: boolean = false;
+  @Prop sniff: boolean = true;
   @Prop proxyMode: string = '规则';
   @Prop perAppProxyEnabled: boolean = false;
   onSave: (settings: AppSettings) => void = () => {
@@ -268,7 +271,7 @@ export struct SettingsPage {
             Text('代理核心')
               .fontSize(12)
               .fontColor($r('app.color.text'))
-            Text('sing-box / libbox 内嵌')
+            Text('mihomo + gVisor 内嵌')
               .fontSize(10)
               .fontColor($r('app.color.muted'))
           }
@@ -305,6 +308,7 @@ export struct SettingsPage {
             .border({ width: 1, color: $r('app.color.line') })
             .onClick(() => {
               this.localLogLevel = this.localLogLevel === 'info' ? 'debug' : 'info';
+              this.save();
             })
         }
         .width('100%')
@@ -524,7 +528,7 @@ export struct SettingsPage {
         .width('100%')
         .margin({ bottom: 8 })
       Column({ space: 0 }) {
-        this.infoRow('版本', 'LIAN CONNECT v0.02 测试版')
+        this.infoRow('版本', 'LIAN CONNECT v0.03 测试版')
         this.infoRow('目标系统', 'HarmonyOS API 22+')
       }
       .width('100%')
@@ -570,6 +574,9 @@ export struct SettingsPage {
       failClosed: this.localFailClosed,
       notificationOn: this.localNotificationOn,
       dnsMode: this.dnsMode,
+      dnsCache: this.dnsCache,
+      fakeIp: this.fakeIp,
+      sniff: this.sniff,
       proxyMode: this.proxyMode,
       logLevel: this.localLogLevel,
       testUrl: this.localTestUrl,

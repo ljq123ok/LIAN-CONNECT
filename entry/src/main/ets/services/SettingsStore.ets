@@ -66,6 +66,9 @@ export class SettingsStore {
       failClosed: false,
       notificationOn: true,
       dnsMode: '智能',
+      dnsCache: true,
+      fakeIp: false,
+      sniff: true,
       proxyMode: '规则',
       logLevel: 'info',
       testUrl: 'https://www.gstatic.com/generate_204',
@@ -83,6 +86,16 @@ export class SettingsStore {
       // 旧存档没有分应用字段：补默认值，避免 undefined 流入 UI
       if (typeof parsed.perAppProxyEnabled !== 'boolean') {
         parsed.perAppProxyEnabled = false;
+      }
+      // v0.02 之前的存档没有 DNS 细分开关：回填与旧版核心配置一致的值。
+      if (typeof parsed.dnsCache !== 'boolean') {
+        parsed.dnsCache = true;
+      }
+      if (typeof parsed.fakeIp !== 'boolean') {
+        parsed.fakeIp = parsed.dnsMode === 'Fake-IP';
+      }
+      if (typeof parsed.sniff !== 'boolean') {
+        parsed.sniff = true;
       }
       return parsed;
     } catch (_err) {

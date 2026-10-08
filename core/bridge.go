@@ -10,21 +10,23 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"runtime/debug"
 	"sort"
 	"strings"
 	"sync"
 	"time"
 	"unsafe"
 
-	"github.com/metacubex/mihomo/config"
-	"github.com/metacubex/mihomo/log"
 	"github.com/metacubex/mihomo/adapter/outboundgroup"
+	"github.com/metacubex/mihomo/component/geodata"
+	"github.com/metacubex/mihomo/config"
 	cconstant "github.com/metacubex/mihomo/constant"
 	"github.com/metacubex/mihomo/hub"
 	"github.com/metacubex/mihomo/hub/executor"
 	"github.com/metacubex/mihomo/hub/route"
 	"github.com/metacubex/mihomo/listener"
 	LC "github.com/metacubex/mihomo/listener/config"
+	"github.com/metacubex/mihomo/log"
 	"github.com/metacubex/mihomo/tunnel"
 	"github.com/metacubex/mihomo/tunnel/statistic"
 )
@@ -119,6 +121,22 @@ type bridgeState struct {
 }
 
 var state = bridgeState{}
+
+const (
+	// Keep the Go heap below the pressure point seen on memory-constrained devices.
+	// This is a soft runtime target, not a hard process/RSS limit.
+	coreMemoryLimitBytes int64 = 112 * 1024 * 1024
+	coreGCPercent              = 50
+)
+
+var runtimeMemoryTuningOnce sync.Once
+
+func configureRuntimeMemory() {
+	runtimeMemoryTuningOnce.Do(func() {
+		debug.SetMemoryLimit(coreMemoryLimitBytes)
+		debug.SetGCPercent(coreGCPercent)
+	})
+}
 
 type statusPayload struct {
 	Running    bool   `json:"running"`
@@ -305,17 +323,18 @@ func LianCoreConnections() *C.char {
 	return cstr(string(payload))
 }
 
-//export LianCoreSetMode
 // builtinGroupNames 是 mihomo 内置、不参与本应用分流决策的组名。
 // GLOBAL 恒存在且包含全部节点，因此成员数常常最大，必须排除，
 // 否则会被误当成「主组」而把选择应用到它上面。
+//
+//export LianCoreSetMode
 var builtinGroupNames = map[string]bool{
-	"GLOBAL":     true,
-	"DIRECT":     true,
-	"REJECT":     true,
+	"GLOBAL":      true,
+	"DIRECT":      true,
+	"REJECT":      true,
 	"REJECT-DROP": true,
-	"PASS":       true,
-	"COMPATIBLE": true,
+	"PASS":        true,
+	"COMPATIBLE":  true,
 }
 
 // largestRoutingGroup 返回成员最多的**非内置**组。
@@ -339,7 +358,6 @@ func largestRoutingGroup() cconstant.Proxy {
 	return best
 }
 
-//export LianCoreSelectNode
 // LianCoreSelectNode 把手动选择的节点下发给核心。
 //
 // 背景：界面上的「选择节点」原先只改 JS 侧变量，从未通知核心，
@@ -348,6 +366,8 @@ func largestRoutingGroup() cconstant.Proxy {
 //
 // groupName 为空时对主组（成员最多的组）生效，覆盖本应用默认只生成
 // 单一「自动选择」组的情况；name 必须是该组的成员节点名，否则返回错误。
+//
+//export LianCoreSelectNode
 func LianCoreSelectNode(groupNameC, nameC *C.char) *C.char {
 	groupName := strings.TrimSpace(C.GoString(groupNameC))
 	name := strings.TrimSpace(C.GoString(nameC))
@@ -414,9 +434,10 @@ type closeResult struct {
 	Closed int `json:"closed"`
 }
 
-//export LianCoreCloseConnection
 // CloseConnection closes one connection by id, or every tracked connection
 // when the id is empty (used by the "close all" action).
+//
+//export LianCoreCloseConnection
 func LianCoreCloseConnection(idC *C.char) *C.char {
 	id := C.GoString(idC)
 	state.mu.Lock()
@@ -708,8 +729,9 @@ func countHealthy(proxy cconstant.Proxy) (int, int) {
 	return healthy, len(list)
 }
 
-//export LianCoreHealth
 // HealthCheck runs a real URL test through the current outbound.
+//
+//export LianCoreHealth
 func LianCoreHealth() *C.char {
 	state.mu.Lock()
 	running := state.running
@@ -723,6 +745,7 @@ func LianCoreHealth() *C.char {
 
 //export LianCoreStart
 func LianCoreStart(configPathC, homeDirC *C.char, fd C.int) *C.char {
+	configureRuntimeMemory()
 	configPath := C.GoString(configPathC)
 	homeDir := C.GoString(homeDirC)
 	state.mu.Lock()
@@ -787,6 +810,12 @@ func LianCoreStart(configPathC, homeDirC *C.char, fd C.int) *C.char {
 		return cstr(string(payload))
 	}
 	hub.ApplyConfig(cfg)
+	// GEOSITE compilation temporarily retains the raw domain records as well as
+	// the compiled matcher. Rules resolve the compiled matcher through the cache
+	// while matching, so only release the raw source records here. Dropping the
+	// compiled GeoSite/GeoIP caches would force them to be rebuilt on live traffic.
+	geodata.ClearGeoSiteSourceCache()
+	debug.FreeOSMemory()
 	if !listener.GetTunConf().Enable {
 		executor.Shutdown()
 		state.lastError = "tun listener failed to start"

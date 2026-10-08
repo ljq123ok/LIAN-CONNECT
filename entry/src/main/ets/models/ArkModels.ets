@@ -78,6 +78,9 @@ export interface AppSettings {
   failClosed: boolean;
   notificationOn: boolean;
   dnsMode: string;
+  dnsCache: boolean;
+  fakeIp: boolean;
+  sniff: boolean;
   proxyMode: string;
   logLevel: string;
   testUrl: string;

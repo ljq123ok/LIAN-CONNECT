@@ -45,6 +45,14 @@ else
   git -C "$DEPS_ROOT/gvisor-ohos" apply "$PATCH"
 fi
 
+MIHOMO_MEMORY_PATCH="$APP_ROOT/patches/mihomo-memory.patch"
+if git -C "$DEPS_ROOT/mihomo" apply --reverse --check "$MIHOMO_MEMORY_PATCH" >/dev/null 2>&1; then
+  printf 'mihomo memory patch already applied\n'
+else
+  git -C "$DEPS_ROOT/mihomo" apply --check "$MIHOMO_MEMORY_PATCH"
+  git -C "$DEPS_ROOT/mihomo" apply "$MIHOMO_MEMORY_PATCH"
+fi
+
 printf 'Dependencies prepared in %s\n' "$DEPS_ROOT"
 printf 'Next: sh %s/scripts/build-toolchain.sh\n' "$DEPS_ROOT/tailscale-harmony"
 printf 'Then: sh scripts/build-core.sh\n'

@@ -9,6 +9,9 @@ binary is stored in this repository.
 - Repository: https://github.com/MetaCubeX/mihomo
 - Pinned commit: `8d7100815edf517bbf9c3e615e604db3a5963706`
 - License: GNU General Public License v3.0
+- Local change: `patches/mihomo-memory.patch` adds an API that releases only
+  temporary raw GeoSite source records while retaining compiled matchers used
+  by active rules.
 
 ## MetaCubeX/gVisor
 

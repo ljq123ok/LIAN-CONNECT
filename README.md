@@ -1,10 +1,10 @@
-# LIAN CONNECT v0.02
+# LIAN CONNECT v0.03
 
 LIAN CONNECT 是一个面向 HarmonyOS 的原生 VPN 客户端。本仓库发布的是
-`v0.02` 测试版源代码；应用清单版本为 `0.0.2`，`versionCode` 为 `2`。
+`v0.03` 测试版源代码；应用清单版本为 `0.0.3`，`versionCode` 为 `3`。
 
-> 当前代码已通过本地构建和稳定性静态回归，但尚未完成当前版本的锁屏、
-> 网络切换和数小时连续运行真机验收，因此不能视为稳定版本。
+> 本版本针对 8 GB 与 12 GB 内存档位的设备做了低内存适配。当前已完成本地构建、
+> 静态回归和短时设备检查；尚未完成 8 GB/12 GB 设备的长时间锁屏与后台内存验收。
 
 ## 1. 基于什么构建
 
@@ -13,7 +13,8 @@ LIAN CONNECT 是一个面向 HarmonyOS 的原生 VPN 客户端。本仓库发布
 - C++ N-API 动态桥接
 - Go `c-shared` 原生核心
 - [MetaCubeX/mihomo](https://github.com/MetaCubeX/mihomo)，固定提交
-  `8d7100815edf517bbf9c3e615e604db3a5963706`
+  `8d7100815edf517bbf9c3e615e604db3a5963706`，应用仓库内含仅释放 GeoSite
+  原始加载数据的内存补丁
 - [MetaCubeX/gVisor](https://github.com/MetaCubeX/gvisor)，固定提交
   `5683e078dbc4b203062aff64a6c07b52c5a01d93`，应用仓库内的 OpenHarmony
   TUN 最小补丁
@@ -49,7 +50,7 @@ ArkTS UIAbility
 
 ## 3. 可能遇到的问题
 
-- `v0.02` 是测试版，锁屏、网络切换和数小时连续运行尚未完成当前版本的真机验收。
+- `v0.03` 是测试版，面向 8 GB/12 GB 内存档位的优化不构成长时间实机稳定性承诺。
 - HarmonyOS 模拟器不能完成 VPN 授权和真实 TUN 数据面验证，必须使用真机。
 - GitHub Release 提供经过脱敏检查的 arm64 **未签名 HAP**；它不能直接安装，
   必须使用自己的证书和调试/发布 Profile 签名。仓库不包含任何签名材料。
@@ -69,7 +70,7 @@ ArkTS UIAbility
 需要 DevEco Studio、HarmonyOS SDK 6.1.1，以及系统可用的 Git 和 Go：
 
 ```bash
-# 1. 获取固定版本的 mihomo、gVisor 和工具链仓库，并应用 OpenHarmony 补丁
+# 1. 获取固定版本的 mihomo、gVisor 和工具链仓库，并应用项目补丁
 bash scripts/prepare-core-deps.sh
 
 # 2. 构建 OpenHarmony Go 工具链，首次执行需要数分钟
@@ -100,11 +101,19 @@ node '/Applications/DevEco-Studio.app/Contents/tools/hvigor/bin/hvigorw.js' \
 ## 验证
 
 ```bash
+bash scripts/memory-regression-check.sh
 bash scripts/stability-regression-check.sh
 bash scripts/release-preflight.sh
 ```
 
-当前版本的完整真机验收还应覆盖：锁屏和前后台长时间运行、网络切换、真实 HTTPS
+有可用真机时，可用默认 60 秒间隔、31 个样本（约 30 分钟）采集主进程与
+VPN Extension 的 RSS/PSS、线程、FD、核心内存与连接数：
+
+```bash
+OUTPUT_FILE=/tmp/lian-memory.tsv bash scripts/device-memory-check.sh
+```
+
+当前版本的完整真机验收还应覆盖：8 GB 与 12 GB 设备锁屏和前后台长时间运行、网络切换、真实 HTTPS
 与 ChatGPT 流量、恢复次数、冻结日志，以及主动断开后 VPN 扩展进程退出。
 
 下载 Release 中的未签名 HAP 后，请按 [自签与安装说明](docs/SELF_SIGNING.md)
